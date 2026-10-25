@@ -17,7 +17,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageDraw
 from scipy.optimize import least_squares
 
 # ============================================================
@@ -279,6 +279,20 @@ section[data-testid="stSidebar"] > div { background: linear-gradient(180deg, rgb
 [data-testid="stFormSubmitButton"] button, .stDownloadButton button { border-radius:12px; font-weight:700; padding:.6rem 1rem; }
 [data-testid="stFormSubmitButton"] button { background:linear-gradient(135deg,#1d4ed8,#2563eb); border:0; box-shadow:0 6px 16px rgba(37,99,235,.35); }
 [data-testid="stFormSubmitButton"] button p { color:#fff; }
+
+/* گزارش */
+.rep-sec { display:flex; align-items:center; gap:10px; margin:20px 0 6px; font-weight:800; font-size:1.05rem; direction:rtl; }
+.rep-sec::before { content:""; width:5px; height:20px; border-radius:3px; background:linear-gradient(#2563eb,#8b5cf6); }
+.rep-row { display:flex; justify-content:space-between; align-items:center; gap:14px; padding:9px 6px;
+  border-bottom:1px dashed rgba(128,128,128,.3); direction:rtl; text-align:right; }
+.rep-row .k { opacity:.85; }
+.rep-row .v { font-weight:800; direction:ltr; unicode-bidi:isolate; text-align:left; white-space:nowrap; }
+.rep-row.hl { background:rgba(37,99,235,.08); border-radius:10px; border-bottom:0; }
+.rep-verdict { margin-top:18px; padding:14px 18px; border-radius:14px; font-weight:700; direction:rtl; text-align:right; }
+.rep-verdict.ok  { background:rgba(16,185,129,.12); border:1px solid rgba(16,185,129,.5); }
+.rep-verdict.bad { background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.5); }
+.rep-title { font-size:1.2rem; font-weight:800; direction:rtl; text-align:right; }
+.rep-date { font-size:.8rem; opacity:.6; direction:rtl; text-align:right; margin-bottom:4px; }
 .foot { text-align:center; font-size:.78rem; opacity:.55; margin:30px 0 6px; }
 """
 
@@ -503,6 +517,125 @@ def safety_fig(gpr: float, tv: dict) -> go.Figure:
     fig.update_yaxes(autorange="reversed")
     fig.update_xaxes(range=[0, max(vals) * 1.25], title="ولتاژ (V)")
     return style_fig(fig, 260)
+
+
+def report_html(inp, fit, rho_eq, rg, rg_design, gpr, tv) -> str:
+    """گزارش به‌صورت HTML ثابتِ راست‌به‌چپ (بدون وابستگی به لیست‌های Markdown)."""
+    def row(k, v, hl=False):
+        return f'<div class="rep-row{" hl" if hl else ""}"><span class="k">{k}</span><span class="v">{v}</span></div>'
+
+    safe_ = gpr <= tv["e_touch"]
+    verdict = ("GPR کمتر از ولتاژ تماس مجاز است؛ تحلیل ولتاژهای mesh و step الزامی نیست." if safe_ else
+               "GPR بیشتر از ولتاژ تماس مجاز است؛ محاسبه Em و Es و اصلاح طرح لازم است.")
+    parts = [
+        '<div class="rep-title">گزارش تحلیل خاک و شبکه زمین</div>',
+        f'<div class="rep-date">{date.today().isoformat()}</div>',
+        '<div class="rep-sec">مدل خاک (دولایه)</div>',
+        row("مقاومت ویژه لایه اول ρ₁", f"{fit['rho1']:.1f} Ω·m"),
+        row("مقاومت ویژه لایه دوم ρ₂", f"{fit['rho2']:.1f} Ω·m"),
+        row("ضخامت لایه اول h", f"{fit['h']:.2f} m"),
+        row("ضریب بازتاب K", f"{fit['k']:.3f}"),
+        row("RMSE برازش", f"{fit['rmse_pct']:.2f} %"),
+        row("بیشینه خطای برازش", f"{fit['max_err_pct']:.2f} %"),
+        '<div class="rep-sec">شبکه زمین</div>',
+        row("مقاومت ویژه معادل ρ_eq", f"{rho_eq:.1f} Ω·m"),
+        row("مساحت", f"{inp['area']:.0f} m²"),
+        row("طول کل هادی‌ها", f"{inp['length']:.0f} m"),
+        row("عمق دفن", f"{inp['depth']:.2f} m"),
+        row("Rg به روش ρ/4r", f"{rg['simple']:.3f} Ω"),
+        row("Rg به روش ρ/4r + ρ/L", f"{rg['with_length']:.3f} Ω"),
+        row("Rg به روش Sverak (مقدار طراحی)", f"{rg_design:.3f} Ω", hl=True),
+        row("جریان شبکه Ig", f"{inp['ig']:,.0f} A"),
+        row("افزایش پتانسیل زمین GPR", f"{gpr:,.0f} V", hl=True),
+        f'<div class="rep-sec">ایمنی (وزن {inp["weight"]} kg ، زمان خطا {inp["ts"]:g} s)</div>',
+        row("جریان مجاز بدن", f"{tv['i_body']:.3f} A"),
+        row("ضریب لایه سطحی Cs", f"{tv['cs']:.3f}"),
+        row("ولتاژ گام مجاز", f"{tv['e_step']:,.0f} V"),
+        row("ولتاژ تماس مجاز", f"{tv['e_touch']:,.0f} V"),
+        f'<div class="rep-verdict {"ok" if safe_ else "bad"}">{"✅" if safe_ else "⚠️"} {verdict}</div>',
+    ]
+    return "".join(parts)
+
+
+# ---------- Gemini ----------
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GEMINI_DEFAULT_MODEL = "gemini-2.5-flash-image"
+
+
+def get_secret(name: str) -> str:
+    try:
+        return str(st.secrets.get(name, "") or "")
+    except Exception:           # فایل secrets وجود ندارد
+        return ""
+
+
+def layout_reference_png(fit: dict, depth: float, hs: float) -> bytes:
+    """طرح ساده رنگی (بدون هیچ عدد) که چیدمان دقیق لایه‌ها را به Gemini نشان می‌دهد."""
+    W, H_, Y0 = 1024, 768, 130
+    h = fit["h"]
+    ymax = max(h * 2.0, h + 3.0)
+    scale = (H_ - 16 - Y0) / (hs + ymax)
+    hs_px = max(hs * scale, 8.0) if hs > 0 else 0.0
+    ys0, yb = Y0 + hs_px, Y0 + hs_px + h * scale
+    img = Image.new("RGB", (W, H_), (214, 236, 255))
+    d = ImageDraw.Draw(img)
+    rgb = lambda r: tuple(int(v) for v in _soil_rgb(r))
+    d.rectangle([0, ys0, W, yb], fill=rgb(fit["rho1"]))
+    d.rectangle([0, yb, W, H_], fill=rgb(fit["rho2"]))
+    if hs > 0:
+        d.rectangle([0, Y0, W, ys0], fill=(150, 150, 150))
+    d.rectangle([0, Y0 - 8, W, Y0], fill=(79, 174, 72))
+    gy = ys0 + depth * scale
+    for gx in range(170, 900, 110):
+        d.ellipse([gx - 11, gy - 11, gx + 11, gy + 11], fill=(199, 125, 58))
+    buf = BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def build_gemini_prompt(rho1: float, rho2: float, h: float, with_ref: bool) -> str:
+    ymax = max(h * 2.0, h + 3.0)
+    pct = int(min(70, max(15, round(h / ymax * 100 / 5) * 5)))
+    start = ("The attached image is a flat schematic of a soil cross-section. Redraw it as a clean, realistic, "
+             "textbook-quality geological cross-section illustration. Keep exactly the same layout, proportions, "
+             "layer boundaries and copper circle positions as the schematic. "
+             if with_ref else
+             "Draw a clean, realistic, textbook-quality geological cross-section illustration. ")
+    return (start +
+            f"Top soil layer: {describe_soil(rho1)}, about {pct} percent of the height. "
+            f"Bottom layer: {describe_soil(rho2)}, with a clearly different color and texture. "
+            "Add natural material texture to each layer (grains, pebbles or fractured rock as appropriate), "
+            "a thin green grass strip on top, and small round copper grounding conductors buried in a row "
+            "just below the surface. Strictly side view, orthographic, no perspective, no landscape. "
+            "No text, no letters, no numbers, no labels, no watermark.")
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=8)
+def generate_gemini_image(prompt: str, ref_png: bytes, api_key: str, model: str) -> bytes:
+    parts = [{"text": prompt}]
+    if ref_png:
+        parts.append({"inline_data": {"mime_type": "image/png",
+                                      "data": base64.b64encode(ref_png).decode()}})
+    body = {"contents": [{"parts": parts}],
+            "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}}
+    try:
+        r = requests.post(GEMINI_URL.format(model=model.strip()),
+                          headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                          json=body, timeout=(10, 120))
+    except requests.RequestException as exc:
+        raise RuntimeError(f"اتصال به Gemini برقرار نشد ({type(exc).__name__}).") from None
+    if not r.ok:
+        try:
+            msg = r.json()["error"]["message"]
+        except (ValueError, KeyError, TypeError):
+            msg = r.text[:200]
+        raise RuntimeError(f"Gemini: HTTP {r.status_code} — {msg[:300]}")
+    for cand in r.json().get("candidates", []):
+        for part in cand.get("content", {}).get("parts", []):
+            blob = part.get("inlineData") or part.get("inline_data")
+            if blob and blob.get("data"):
+                return base64.b64decode(blob["data"])
+    raise RuntimeError("Gemini تصویری برنگرداند (ممکن است فیلتر ایمنی یا سهمیه مانع شده باشد).")
 
 
 # ============================================================
@@ -757,7 +890,8 @@ with tab3:
 with tab4:
     report = build_report(inp, fit, out["rho_eq"], rg, out["rg_design"], gpr, tv)
     with st.container(border=True):
-        st.markdown(report)
+        st.markdown(report_html(inp, fit, out["rho_eq"], rg, out["rg_design"], gpr, tv),
+                    unsafe_allow_html=True)
     d1, d2 = st.columns(2)
     d1.download_button("📥 دانلود گزارش (Markdown)", report.encode("utf-8"),
                        file_name="grounding_report.md", use_container_width=True)
@@ -774,22 +908,51 @@ with tab5:
     section("تصویرسازی هنری با هوش مصنوعی", "اختیاری")
     st.markdown('<div class="note warn">این تصویر فقط یک نمای هنری است و مقیاس یا اعداد دقیق ندارد؛ '
                 'مقطع دقیق و رسم‌شده از اعداد تحلیل در تب «مدل خاک» است.</div>', unsafe_allow_html=True)
-    default_prompt = build_soil_prompt(fit["rho1"], fit["rho2"], fit["h"])
-    pkey = hashlib.md5(default_prompt.encode()).hexdigest()[:8]
-    prompt_text = st.text_area("متن توصیف تصویر (قابل ویرایش)", default_prompt, height=140, key=f"prompt_{pkey}")
-    st.caption("فقط همین متن به سرویس خارجی ارسال می‌شود و مقادیر عددی پروژه در آن نیست.")
-    api_key = st.text_input("کلید API سرویس (اختیاری)", type="password",
-                            help="اگر سرویس بدون کلید پاسخ نداد، کلید را از enter.pollinations.ai بگیرید.")
+    provider = st.radio("سرویس تصویرساز", ["Gemini (پیشنهادی)", "Pollinations"], horizontal=True)
+    use_gemini = provider.startswith("Gemini")
+
+    if use_gemini:
+        use_ref = st.checkbox("ارسال طرح مرجع رنگی برای حفظ چیدمان لایه‌ها (پیشنهادی)", value=True)
+        default_prompt = build_gemini_prompt(fit["rho1"], fit["rho2"], fit["h"], use_ref)
+    else:
+        use_ref = False
+        default_prompt = build_soil_prompt(fit["rho1"], fit["rho2"], fit["h"])
+    pkey = hashlib.md5((provider + default_prompt).encode()).hexdigest()[:8]
+    prompt_text = st.text_area("متن توصیف تصویر (قابل ویرایش)", default_prompt, height=150, key=f"prompt_{pkey}")
+
+    if use_gemini:
+        secret_key = get_secret("GEMINI_API_KEY")
+        api_key = secret_key or st.text_input("کلید API جمینای", type="password",
+                                              help="از Google AI Studio بگیرید. بهتر است در Secrets برنامه با نام GEMINI_API_KEY ذخیره شود.")
+        model_name = st.text_input("نام مدل", GEMINI_DEFAULT_MODEL)
+        ref_png = layout_reference_png(fit, inp["depth"], inp["hs"]) if use_ref else b""
+        if use_ref:
+            with st.expander("طرح مرجعی که به Gemini فرستاده می‌شود"):
+                st.image(ref_png, width=300)
+        st.caption("فقط متن بالا و یک طرح ساده رنگی (بدون هیچ عدد) به Google ارسال می‌شود.")
+    else:
+        api_key = st.text_input("کلید API سرویس (اختیاری)", type="password",
+                                help="اگر سرویس بدون کلید پاسخ نداد، کلید را از enter.pollinations.ai بگیرید.")
+        st.caption("فقط همین متن به سرویس خارجی ارسال می‌شود و مقادیر عددی پروژه در آن نیست.")
+
     b1, b2 = st.columns(2)
     gen = b1.button("✨ تولید تصویر", use_container_width=True)
     regen = b2.button("🔄 تصویر جدید", use_container_width=True)
     if regen:
         st.session_state["ai_var"] = st.session_state.get("ai_var", 0) + 1
     if gen or regen:
-        seed = int(hashlib.md5(prompt_text.encode()).hexdigest()[:6], 16) + st.session_state.get("ai_var", 0)
+        var = st.session_state.get("ai_var", 0)
         try:
+            if use_gemini and not (api_key or "").strip():
+                raise RuntimeError("کلید API جمینای را وارد کنید.")
             with st.spinner("در حال ترسیم مقطع زمین (۱۰ تا ۶۰ ثانیه)..."):
-                data = generate_soil_image(prompt_text, seed, api_key.strip())
+                if use_gemini:
+                    # برای «تصویر جدید» یک جمله تنوع به پرامپت اضافه می‌شود تا کش نتیجه تکراری ندهد
+                    p_send = prompt_text + (f" Variation {var}." if var else "")
+                    data = generate_gemini_image(p_send, ref_png, api_key.strip(), model_name)
+                else:
+                    seed = int(hashlib.md5(prompt_text.encode()).hexdigest()[:6], 16) + var
+                    data = generate_soil_image(prompt_text, seed, (api_key or "").strip())
             st.session_state["ai_img"] = dict(
                 data=data,
                 caption=(f"نمای هنری · ρ₁ = {fit['rho1']:.0f} Ω·m ، h = {fit['h']:.1f} m ، "
@@ -799,6 +962,6 @@ with tab5:
     img = st.session_state.get("ai_img")
     if img:
         st.image(img["data"], caption=img["caption"], use_container_width=True)
-        st.download_button("📥 دانلود تصویر", img["data"], file_name="soil_section.jpg", mime="image/jpeg")
+        st.download_button("📥 دانلود تصویر", img["data"], file_name="soil_section_ai.png", mime="image/png")
 
 st.markdown('<div class="foot">Grounding Designer · بر پایه IEEE Std 80</div>', unsafe_allow_html=True)
