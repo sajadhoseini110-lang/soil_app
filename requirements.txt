@@ -2,4 +2,6 @@ streamlit
 numpy
 pandas
 scipy
-matplotlib
+plotly
+requests
+Pillow
