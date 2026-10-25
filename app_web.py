@@ -2,6 +2,9 @@
 """
 Soil & Grounding Designer — تحلیل مقاومت ویژه خاک (Wenner) و طراحی اولیه شبکه زمین
 مرجع: IEEE Std 80
+
+امکانات: برازش خاک دولایه، مقطع دقیق SVG، نمای سه‌بعدی (Plotly)، مقاومت شبکه (Sverak)،
+GPR و ولتاژهای مجاز، گزارش راست‌به‌چپ، و تصویرسازی هنری با Gemini یا Pollinations.
 """
 from __future__ import annotations
 
@@ -519,6 +522,56 @@ def safety_fig(gpr: float, tv: dict) -> go.Figure:
     return style_fig(fig, 260)
 
 
+def _box(x0, x1, y0, y1, z0, z1, color, opacity, name) -> go.Mesh3d:
+    """مکعب‌مستطیل توپر (۸ رأس، ۱۲ مثلث) برای نمایش لایه‌ها."""
+    return go.Mesh3d(
+        x=[x0, x1, x1, x0, x0, x1, x1, x0], y=[y0, y0, y1, y1, y0, y0, y1, y1],
+        z=[z0, z0, z0, z0, z1, z1, z1, z1],
+        i=[7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2], j=[3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3],
+        k=[0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6],
+        color=color, opacity=opacity, name=name, showlegend=True, flatshading=True,
+        hovertemplate=name + "<extra></extra>")
+
+
+def fig_3d_soil(fit: dict, area: float, length: float, depth: float, hs: float, exag: float = 3.0) -> go.Figure:
+    """نمای سه‌بعدی: دو لایه خاک (هم‌رنگ با مقطع دوبعدی)، لایه سطحی و شبکه هادی‌ها."""
+    L = float(np.sqrt(area))
+    h = fit["h"]
+    zmax = max(h * 2.0, h + 3.0, depth + 1.5)
+    c1, c2 = _hex(_soil_rgb(fit["rho1"])), _hex(_soil_rgb(fit["rho2"]))
+    fig = go.Figure()
+    fig.add_trace(_box(0, L, 0, L, -zmax, -h, c2, 0.50, f"لایه دوم · ρ₂ = {fit['rho2']:,.0f} Ω·m"))
+    fig.add_trace(_box(0, L, 0, L, -h, 0, c1, 0.55, f"لایه اول · ρ₁ = {fit['rho1']:,.0f} Ω·m"))
+    if hs > 0:
+        fig.add_trace(_box(0, L, 0, L, 0, hs, "#9aa0a6", 0.95, f"لایه سطحی · {hs:g} m"))
+
+    # تعداد هادی‌ها در هر جهت از طول کل ورودی تخمین زده می‌شود (شبکه مربعی)
+    n = int(np.clip(round(length / (2.0 * L)), 2, 25))
+    xs, ys, zs = [], [], []
+    for pos in np.linspace(0, L, n):
+        xs += [0, L, None, pos, pos, None]
+        ys += [pos, pos, None, 0, L, None]
+        zs += [-depth, -depth, None, -depth, -depth, None]
+    fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode="lines", line=dict(color=C_AMBER, width=6),
+                               name=f"هادی‌های شبکه ({n}×{n})", hoverinfo="skip"))
+
+    ticks = np.linspace(-zmax, 0, 5)
+    fig.update_layout(
+        height=520, margin=dict(l=0, r=0, t=30, b=0),
+        paper_bgcolor="rgba(0,0,0,0)", font=dict(family=FONT, size=12),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1),
+        scene=dict(
+            xaxis=dict(title="X (m)", backgroundcolor="rgba(0,0,0,0)"),
+            yaxis=dict(title="Y (m)", backgroundcolor="rgba(0,0,0,0)"),
+            zaxis=dict(title="عمق (m)", range=[-zmax, max(hs, 0.0) + 0.2], tickvals=list(ticks),
+                       ticktext=[f"{-t:.1f}" for t in ticks], backgroundcolor="rgba(0,0,0,0)"),
+            aspectmode="manual",
+            aspectratio=dict(x=1, y=1, z=float(np.clip(zmax / L * exag, 0.12, 1.0))),
+            camera=dict(eye=dict(x=1.5, y=-1.7, z=0.9)),
+        ))
+    return fig
+
+
 def report_html(inp, fit, rho_eq, rg, rg_design, gpr, tv) -> str:
     """گزارش به‌صورت HTML ثابتِ راست‌به‌چپ (بدون وابستگی به لیست‌های Markdown)."""
     def row(k, v, hl=False):
@@ -817,8 +870,8 @@ st.markdown(H(f"""
   <div class="track-l"><span>0</span><span>حد مجاز</span><span>150٪</span></div>
 </div>"""), unsafe_allow_html=True)
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["🌍 مدل خاک", "🛡️ شبکه و ایمنی", "📋 جدول داده‌ها", "📄 گزارش", "🎨 تصویرسازی AI"])
+tab1, tab_3d, tab2, tab3, tab4, tab5 = st.tabs(
+    ["🌍 مدل خاک", "🌐 نمای سه‌بعدی", "🛡️ شبکه و ایمنی", "📋 جدول داده‌ها", "📄 گزارش", "🎨 تصویرسازی AI"])
 
 with tab1:
     q_kind = "good" if fit["rmse_pct"] <= 5 else "warn" if fit["rmse_pct"] <= 10 else "bad"
@@ -853,6 +906,15 @@ with tab1:
                            mime="image/svg+xml", use_container_width=True)
     section("خطای برازش", "ناحیه سبز: ±۱۰٪")
     st.plotly_chart(residual_fig(a_vals, fit["rel_err"]), use_container_width=True)
+
+with tab_3d:
+    section("نمای سه‌بعدی لایه‌ها و شبکه زمین", "با ماوس یا انگشت بچرخانید")
+    exag = st.slider("اغراق عمق (×)", 1, 10, 3,
+                     help="عمق لایه‌ها نسبت به ابعاد زمین کم است؛ این مقدار فقط ظاهر نمودار را بلندتر می‌کند.")
+    st.plotly_chart(fig_3d_soil(fit, inp["area"], inp["length"], inp["depth"], inp["hs"], float(exag)),
+                    use_container_width=True)
+    st.markdown('<div class="note info">زمین مربع‌شکل و شبکه مربعی فرض شده است و تعداد هادی‌ها از «طول کل هادی‌ها» '
+                'تخمین زده می‌شود. نمودار برای درک فضایی است، نه نقشه اجرایی.</div>', unsafe_allow_html=True)
 
 with tab2:
     section("مقاومت شبکه زمین", f"ρ معادل = {out['rho_eq']:,.1f} Ω·m")
