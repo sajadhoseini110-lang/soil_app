@@ -6,6 +6,7 @@ Soil & Grounding Designer — تحلیل مقاومت ویژه خاک (Wenner) �
 from __future__ import annotations
 
 import re
+import base64
 import hashlib
 from datetime import date
 from io import BytesIO
@@ -194,7 +195,7 @@ def build_report(inp: dict, fit: dict, rho_eq: float, rg: dict, rg_design: float
 CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700;800&display=swap');
 .stApp, button, input, textarea, label, .stMarkdown { font-family: 'Vazirmatn', Tahoma, sans-serif !important; }
-.block-container { padding-top: 1.4rem; max-width: 1280px; direction: rtl; }
+.block-container { padding-top: 3.6rem; max-width: 1280px; direction: rtl; }
 header[data-testid="stHeader"] { background: transparent; }
 #MainMenu, footer { visibility: hidden; }
 .stMarkdown, .stAlert, [data-testid="stWidgetLabel"] { direction: rtl; text-align: right; }
@@ -360,39 +361,136 @@ def residual_fig(a, err) -> go.Figure:
     return style_fig(fig, 300)
 
 
-def soil_profile_fig(fit, depth: float, hs: float, rho_s: float) -> go.Figure:
+# ---------- مقطع واقع‌گرایانه خاک (SVG، دقیق و بدون نیاز به اینترنت) ----------
+_STOPS = [(0.0, (58, 40, 30)), (0.3, (120, 86, 56)), (0.55, (190, 160, 108)),
+          (0.78, (150, 152, 155)), (1.0, (205, 208, 212))]
+
+
+def _soil_rgb(rho: float):
+    t = float(np.clip((np.log10(max(rho, 1.0)) - 1.0) / 3.2, 0.0, 1.0))
+    for (t0, c0), (t1, c1) in zip(_STOPS, _STOPS[1:]):
+        if t <= t1:
+            u = (t - t0) / (t1 - t0)
+            return tuple(c0[i] + (c1[i] - c0[i]) * u for i in range(3))
+    return _STOPS[-1][1]
+
+
+def _hex(c, k: float = 1.0) -> str:
+    return "#" + "".join(f"{int(np.clip(v * k, 0, 255)):02x}" for v in c)
+
+
+def _texture(rng, x0, y0, w, h, rho, base) -> str:
+    """بافت بصری لایه بر اساس نوع خاک (رس، لوم، شن، سنگ)."""
+    out = []
+    area = w * h
+    n_dots = int(min(area / 260, 800))
+    for _ in range(n_dots):
+        k = rng.choice([0.72, 0.82, 1.18, 1.3])
+        out.append(f'<circle cx="{x0 + rng.uniform(0, w):.0f}" cy="{y0 + rng.uniform(0, h):.0f}" '
+                   f'r="{rng.uniform(.6, 1.5):.1f}" fill="{_hex(base, k)}" opacity=".8"/>')
+    if rho >= 60:                                           # شن و قلوه‌سنگ
+        n = int(min(area / (1400 if rho < 2000 else 2600), 170))
+        for _ in range(n):
+            rx, ry = rng.uniform(3, 9 if rho < 2000 else 12), rng.uniform(2, 6 if rho < 2000 else 8)
+            k = rng.uniform(.85, 1.25)
+            out.append(f'<ellipse cx="{x0 + rng.uniform(0, w):.0f}" cy="{y0 + rng.uniform(0, h):.0f}" '
+                       f'rx="{rx:.1f}" ry="{ry:.1f}" transform="rotate({rng.uniform(-40, 40):.0f})" '
+                       f'fill="{_hex(base, k)}" stroke="{_hex(base, .55)}" stroke-width="1" opacity=".9"/>')
+    if rho >= 2000:                                         # سنگ شکسته با ترک
+        for _ in range(int(min(area / 5000, 60))):
+            cx, cy = x0 + rng.uniform(0, w), y0 + rng.uniform(0, h)
+            pts = []
+            for ang in np.linspace(0, 2 * np.pi, 6, endpoint=False):
+                r = rng.uniform(10, 24)
+                pts.append(f"{cx + r * np.cos(ang):.0f},{cy + r * np.sin(ang) * .7:.0f}")
+            out.append(f'<polygon points="{" ".join(pts)}" fill="{_hex(base, rng.uniform(.9, 1.15))}" '
+                       f'stroke="{_hex(base, .5)}" stroke-width="1.2" opacity=".75"/>')
+    for _ in range(3):                                      # لایه‌بندی طبیعی
+        y = y0 + rng.uniform(.15, .9) * h
+        d = f"M{x0},{y:.0f} " + " ".join(f"L{x0 + i * 40},{y + rng.uniform(-3, 3):.0f}"
+                                         for i in range(1, int(w / 40) + 1))
+        out.append(f'<path d="{d}" stroke="{_hex(base, .6)}" stroke-width="1" fill="none" opacity=".35"/>')
+    return "".join(out)
+
+
+def soil_section_svg(fit: dict, depth: float, hs: float, rho_s: float) -> str:
+    W, H_, Y0, Y_END = 800, 520, 84, 504
     h = fit["h"]
     ymax = max(h * 2.0, h + 3.0)
-    ymin = -(hs + 0.12 * ymax)
-    fig = go.Figure(go.Scatter(x=[0, 1], y=[ymin, ymax], mode="markers", marker_opacity=0,
-                               showlegend=False, hoverinfo="skip"))
+    scale = (Y_END - Y0) / (hs + ymax)
+    hs_px = max(hs * scale, 6.0) if hs > 0 else 0.0
+    ys0 = Y0 + hs_px
+    yb = ys0 + h * scale
+    rng = np.random.default_rng(int(abs(fit["rho1"] * 1000 + fit["rho2"] * 10 + h * 100)) % (2**32))
+    c1, c2 = _soil_rgb(fit["rho1"]), _soil_rgb(fit["rho2"])
+    font = "Vazirmatn, Tahoma, 'Noto Sans Arabic', sans-serif"
+    tx = f'font-family="{font}" style="unicode-bidi:plaintext" '
+    halo = 'fill="#fff" stroke="#000" stroke-width="3.2" paint-order="stroke" stroke-linejoin="round" '
 
-    def rect(y0, y1, fill, line):
-        fig.add_shape(type="rect", xref="paper", yref="y", x0=0, x1=1, y0=y0, y1=y1,
-                      fillcolor=fill, line=dict(color=line, width=1.5), layer="below")
+    p = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H_}">',
+         '<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#bfe0ff"/>'
+         '<stop offset="1" stop-color="#eef7ff"/></linearGradient>'
+         '<linearGradient id="shade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity="0"/>'
+         '<stop offset="1" stop-color="#000" stop-opacity=".32"/></linearGradient>'
+         '<radialGradient id="cu" cx=".35" cy=".3"><stop offset="0" stop-color="#ffd2a1"/>'
+         '<stop offset=".5" stop-color="#cf7f3a"/><stop offset="1" stop-color="#7a4a1e"/></radialGradient>'
+         f'<clipPath id="k1"><rect x="0" y="{ys0:.0f}" width="{W}" height="{yb - ys0:.0f}"/></clipPath>'
+         f'<clipPath id="k2"><rect x="0" y="{yb:.0f}" width="{W}" height="{Y_END - yb:.0f}"/></clipPath>'
+         f'<clipPath id="ks"><rect x="0" y="{Y0}" width="{W}" height="{hs_px:.0f}"/></clipPath></defs>',
+         f'<rect width="{W}" height="{H_}" fill="url(#sky)"/>']
 
-    def label(y, text, **kw):
-        fig.add_annotation(xref="paper", yref="y", x=0.5, y=y, text=text, showarrow=False, **kw)
-
+    # لایه اول
+    p.append(f'<rect x="0" y="{ys0:.0f}" width="{W}" height="{yb - ys0:.0f}" fill="{_hex(c1)}"/>')
+    p.append(f'<g clip-path="url(#k1)">{_texture(rng, 0, ys0, W, yb - ys0, fit["rho1"], c1)}</g>')
+    # لایه دوم
+    p.append(f'<rect x="0" y="{yb:.0f}" width="{W}" height="{Y_END - yb:.0f}" fill="{_hex(c2)}"/>')
+    p.append(f'<g clip-path="url(#k2)">{_texture(rng, 0, yb, W, Y_END - yb, fit["rho2"], c2)}</g>')
+    # لایه سطحی
     if hs > 0:
-        rect(-hs, 0, "rgba(148,163,184,.85)", "rgba(100,116,139,1)")
-        label(-hs, f"لایه سطحی · ρs = {rho_s:,.0f} Ω·m", yanchor="bottom", font=dict(size=11))
-    rect(0, h, "rgba(37,99,235,.30)", C_BLUE)
-    rect(h, ymax, "rgba(139,92,246,.30)", C_PURPLE)
-    label(h / 2, f"<b>لایه اول</b><br>ρ₁ = {fit['rho1']:,.1f} Ω·m")
-    label((h + ymax) / 2, f"<b>لایه دوم (تا بی‌نهایت)</b><br>ρ₂ = {fit['rho2']:,.1f} Ω·m")
-    fig.add_shape(type="line", xref="paper", yref="y", x0=0.94, x1=0.94, y0=0, y1=h,
-                  line=dict(color="gray", width=2))
-    fig.add_annotation(xref="paper", yref="y", x=0.92, y=h / 2, text=f"h = {h:.2f} m",
-                       showarrow=False, xanchor="right", font=dict(size=11))
-    if depth > 0:
-        fig.add_shape(type="line", xref="paper", yref="y", x0=0.06, x1=0.80, y0=depth, y1=depth,
-                      line=dict(color=C_AMBER, width=3, dash="dash"))
-        fig.add_annotation(xref="paper", yref="y", x=0.06, y=depth, text=f"شبکه زمین ({depth:g} m)",
-                           showarrow=False, xanchor="left", yanchor="bottom", font=dict(size=11, color=C_AMBER))
-    fig.update_xaxes(range=[0, 1], visible=False, fixedrange=True)
-    fig.update_yaxes(range=[ymax, ymin], title="عمق (m)", fixedrange=True)
-    return style_fig(fig, 400)
+        cs = _soil_rgb(rho_s)
+        p.append(f'<rect x="0" y="{Y0}" width="{W}" height="{hs_px:.0f}" fill="{_hex(cs)}"/>')
+        p.append(f'<g clip-path="url(#ks)">{_texture(rng, 0, Y0, W, hs_px, max(rho_s, 600), cs)}</g>')
+    # سایه عمق و مرز لایه‌ها
+    p.append(f'<rect x="0" y="{Y0}" width="{W}" height="{Y_END - Y0}" fill="url(#shade)"/>')
+    d = f"M0,{yb:.0f} " + " ".join(f"L{i * 40},{yb + rng.uniform(-2.5, 2.5):.1f}" for i in range(1, W // 40 + 1))
+    p.append(f'<path d="{d}" stroke="#1b1b1b" stroke-width="2.2" fill="none" opacity=".75"/>')
+    # چمن
+    blades = "".join(f'<path d="M{x:.0f},{Y0} l{rng.uniform(-3, 3):.1f},-{rng.uniform(5, 11):.0f}" '
+                     f'stroke="#3f9b3a" stroke-width="2"/>' for x in rng.uniform(0, W, 200))
+    p.append(f'<rect x="0" y="{Y0 - 5}" width="{W}" height="6" fill="#4fae48"/>{blades}')
+
+    # هادی‌های شبکه زمین (مقطع)
+    gy = ys0 + depth * scale
+    for gx in (250, 330, 410, 490, 570, 650):
+        p.append(f'<circle cx="{gx}" cy="{gy:.0f}" r="7" fill="url(#cu)" stroke="#5a3513" stroke-width="1"/>')
+    p.append(f'<text x="450" y="{gy - 15:.0f}" text-anchor="middle" font-size="14" {tx}{halo}>'
+             f'هادی‌های شبکه زمین · عمق دفن {depth:g} m</text>')
+
+    # برچسب‌های لایه‌ها
+    def tag(y_top, y_bot, title, value):
+        cy = (y_top + y_bot) / 2
+        p.append(f'<rect x="14" y="{cy - 29:.0f}" width="196" height="58" rx="12" fill="#000" opacity=".58"/>')
+        p.append(f'<text x="198" y="{cy - 6:.0f}" text-anchor="end" font-size="15" font-weight="700" fill="#fff" {tx}>{title}</text>')
+        p.append(f'<text x="198" y="{cy + 18:.0f}" text-anchor="end" font-size="17" fill="#ffe08a" '
+                 f'font-family="{font}" style="direction:ltr;unicode-bidi:isolate">{value}</text>')
+
+    tag(ys0, yb, "لایه اول", f"ρ₁ = {fit['rho1']:,.0f} Ω·m")
+    tag(yb, Y_END, "لایه دوم (تا عمق زیاد)", f"ρ₂ = {fit['rho2']:,.0f} Ω·m")
+    if hs > 0:
+        p.append(f'<text x="{W - 12}" y="{Y0 - 14}" text-anchor="end" font-size="13" {tx}{halo}>'
+                 f'لایه سطحی (سنگ‌ریزه) · ضخامت {hs:g} m · ρs = {rho_s:,.0f} Ω·m</text>')
+
+    # اندازه‌گذاری h
+    xd = W - 30
+    p.append(f'<line x1="{xd}" y1="{ys0:.0f}" x2="{xd}" y2="{yb:.0f}" stroke="#fff" stroke-width="2.4"/>')
+    for yy, sgn in ((ys0, 1), (yb, -1)):
+        p.append(f'<path d="M{xd - 6},{yy + sgn * 10:.0f} L{xd},{yy:.0f} L{xd + 6},{yy + sgn * 10:.0f}" '
+                 f'stroke="#fff" stroke-width="2.4" fill="none"/>')
+    ym = (ys0 + yb) / 2
+    p.append(f'<text transform="translate({xd - 12},{ym:.0f}) rotate(-90)" text-anchor="middle" font-size="15" '
+             f'font-family="{font}" style="direction:ltr" {halo}>h = {h:.2f} m</text>')
+    p.append("</svg>")
+    return "".join(p)
 
 
 def safety_fig(gpr: float, tv: dict) -> go.Figure:
@@ -417,30 +515,31 @@ AI_ENDPOINTS = [
 
 
 def describe_soil(rho: float) -> str:
-    """تبدیل مقاومت ویژه به توصیف بصری خاک برای پرامپت."""
+    """تبدیل مقاومت ویژه به توصیف بصری (با رنگ مشخص) برای پرامپت."""
     if rho < 20:
-        return "very wet dark marshy clay"
+        return "very dark brown wet clay"
     if rho < 60:
-        return "moist dark brown loam"
+        return "dark brown moist loam"
     if rho < 150:
-        return "damp reddish-brown clay-loam"
+        return "reddish-brown clay-loam"
     if rho < 500:
-        return "dry light tan sand and gravel"
+        return "light tan sand with small gravel"
     if rho < 2000:
-        return "dry grey gravelly rocky ground"
-    return "solid grey granite bedrock"
+        return "grey-tan coarse gravel with stones"
+    return "light grey fractured rock"
 
 
 def build_soil_prompt(rho1: float, rho2: float, h: float) -> str:
     ymax = max(h * 2.0, h + 3.0)
     pct = int(min(70, max(15, round(h / ymax * 100 / 5) * 5)))
     return (
-        "Side-view cross-section illustration of two horizontal soil layers for an electrical grounding study, "
-        "flat clean technical style, soft colors. "
-        f"Top layer: {describe_soil(rho1)}, about {pct} percent of the image height. "
-        f"Below a sharp straight boundary: {describe_soil(rho2)}, reaching the bottom edge. "
-        "A thin grass strip on top and a few short copper grounding conductors buried near the surface. "
-        "No text, no letters, no numbers, no labels, no people."
+        "Flat 2D educational geological cross-section diagram, strictly orthographic side view, "
+        "like a textbook soil profile illustration. Not a photograph, no perspective, no landscape, no horizon, no 3D. "
+        "Two perfectly horizontal bands stacked vertically, separated by one sharp straight horizontal line. "
+        f"Top band: {describe_soil(rho1)}, about {pct} percent of the height. "
+        f"Bottom band: {describe_soil(rho2)}, filling the rest, clearly different color and texture from the top band. "
+        "A thin green grass strip along the top edge, and a row of small round copper conductor circles "
+        "buried just below the top edge. No text, no letters, no numbers, no labels."
     )
 
 
@@ -607,14 +706,18 @@ with tab1:
         st.markdown('<div class="note warn">یکی از پارامترها به مرز بازه جستجو رسیده است؛ نتیجه برازش یکتا نیست.</div>',
                     unsafe_allow_html=True)
 
-    c1, c2 = st.columns([3, 2])
+    c1, c2 = st.columns(2)
     with c1:
         section("منحنی برازش", "اندازه‌گیری در برابر مدل")
         st.plotly_chart(fit_fig(a_vals, rho_vals, fit), use_container_width=True)
     with c2:
-        section("مقطع خاک", "نمایش لایه‌ها")
-        st.plotly_chart(soil_profile_fig(fit, inp["depth"], inp["hs"], inp["rho_s"]),
-                        use_container_width=True)
+        section("مقطع خاک", "رسم‌شده از اعداد تحلیل · مقیاس عمق واقعی")
+        svg = soil_section_svg(fit, inp["depth"], inp["hs"], inp["rho_s"])
+        b64 = base64.b64encode(svg.encode("utf-8")).decode()
+        st.markdown(f'<img src="data:image/svg+xml;base64,{b64}" style="width:100%;border-radius:16px;'
+                    f'box-shadow:0 8px 22px rgba(0,0,0,.18)"/>', unsafe_allow_html=True)
+        st.download_button("📥 دانلود مقطع (SVG)", svg.encode("utf-8"), file_name="soil_section.svg",
+                           mime="image/svg+xml", use_container_width=True)
     section("خطای برازش", "ناحیه سبز: ±۱۰٪")
     st.plotly_chart(residual_fig(a_vals, fit["rel_err"]), use_container_width=True)
 
@@ -670,7 +773,7 @@ with tab4:
 with tab5:
     section("تصویرسازی هنری با هوش مصنوعی", "اختیاری")
     st.markdown('<div class="note warn">این تصویر فقط یک نمای هنری است و مقیاس یا اعداد دقیق ندارد؛ '
-                'مقطع مهندسی دقیق در تب «مدل خاک» قرار دارد.</div>', unsafe_allow_html=True)
+                'مقطع دقیق و رسم‌شده از اعداد تحلیل در تب «مدل خاک» است.</div>', unsafe_allow_html=True)
     default_prompt = build_soil_prompt(fit["rho1"], fit["rho2"], fit["h"])
     pkey = hashlib.md5(default_prompt.encode()).hexdigest()[:8]
     prompt_text = st.text_area("متن توصیف تصویر (قابل ویرایش)", default_prompt, height=140, key=f"prompt_{pkey}")
