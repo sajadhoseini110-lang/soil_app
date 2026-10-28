@@ -42,12 +42,12 @@ def parse_series(text: str, name: str) -> np.ndarray:
 
 
 def validate_data(a: np.ndarray, rho: np.ndarray):
+    if not np.all(np.isfinite(a)) or not np.all(np.isfinite(rho)):
+        raise ValueError("داده‌ها باید عددی و متناهی باشند؛ مقدار NaN یا Infinity مجاز نیست.")
     if a.size != rho.size:
         raise ValueError(f"تعداد فاصله‌ها ({a.size}) با تعداد مقاومت‌ها ({rho.size}) برابر نیست.")
     if a.size < 4:
         raise ValueError("برای برازش مدل دولایه (۳ پارامتر) حداقل ۴ نقطه اندازه‌گیری لازم است.")
-    if not np.all(np.isfinite(a)) or not np.all(np.isfinite(rho)):
-        raise ValueError("داده‌ها نباید شامل NaN یا بی‌نهایت باشند.")
     if np.any(a <= 0) or np.any(rho <= 0):
         raise ValueError("تمام فاصله‌ها و مقاومت‌ها باید مثبت باشند.")
     order = np.argsort(a)
@@ -229,129 +229,322 @@ def build_report(inp: dict, fit: dict, rho_eq: float, rg: dict, rg_design: float
 #  استایل
 # ============================================================
 CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700;800&display=swap');
-.stApp, button, input, textarea, label, .stMarkdown { font-family: 'Vazirmatn', Tahoma, sans-serif !important; }
-.block-container { padding-top: 3.6rem; max-width: 1280px; direction: rtl; }
+@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap');
+
+:root {
+  --blue: #1d4ed8;
+  --blue-bright: #3b82f6;
+  --purple: #7c3aed;
+  --green: #059669;
+  --amber: #d97706;
+  --red: #dc2626;
+  --slate-900: #0f172a;
+  --slate-800: #1e293b;
+  --border: rgba(148,163,184,.28);
+  --surface: rgba(148,163,184,.07);
+  --shadow-sm: 0 1px 3px rgba(15,23,42,.06);
+  --shadow-md: 0 8px 24px rgba(15,23,42,.10);
+  --shadow-lg: 0 16px 40px rgba(15,23,42,.14);
+  --radius: 16px;
+}
+
+.stApp, button, input, textarea, label, .stMarkdown,
+[data-testid="stWidgetLabel"], .stSelectbox, .stNumberInput {
+  font-family: 'Vazirmatn', Tahoma, system-ui, sans-serif !important;
+}
+
+.block-container {
+  padding-top: 2.8rem;
+  padding-bottom: 3rem;
+  max-width: 1320px;
+  direction: rtl;
+}
+
 header[data-testid="stHeader"] { background: transparent; }
 #MainMenu, footer { visibility: hidden; }
+
 .stMarkdown, .stAlert, [data-testid="stWidgetLabel"] { direction: rtl; text-align: right; }
+.stMarkdown p, .stMarkdown li, .stAlert p, [data-testid="stWidgetLabel"] *,
+.note, .adv-b, .adv-li, .kpi-sub, .sec .s {
+  direction: rtl;
+  unicode-bidi: plaintext;
+  text-align: right;
+}
 .js-plotly-plot, .stDataFrame, input, textarea, [data-baseweb="select"] { direction: ltr; }
 section[data-testid="stSidebar"] { direction: rtl; }
-section[data-testid="stSidebar"] > div { background: linear-gradient(180deg, rgba(37,99,235,.09), rgba(37,99,235,0) 40%); }
+.stMarkdown bdi, .stMarkdown .ltr, .note bdi, .chip bdi, .adv bdi {
+  direction: ltr;
+  unicode-bidi: isolate;
+  display: inline-block;
+}
+.stMarkdown code, .stMarkdown pre { direction: ltr; unicode-bidi: isolate; text-align: left; }
+
+/* Sidebar */
+section[data-testid="stSidebar"] > div {
+  background: linear-gradient(180deg, rgba(29,78,216,.08) 0%, rgba(124,58,237,.04) 35%, transparent 70%);
+  border-inline-end: 1px solid var(--border);
+}
+section[data-testid="stSidebar"] [data-testid="stForm"] {
+  background: transparent;
+}
 
 .n { direction: ltr; unicode-bidi: isolate; display: inline-block; font-weight: 700; }
 
-/* برند سایدبار */
-.brand { display:flex; align-items:center; gap:12px; margin-bottom:6px; }
-.brand .logo { width:42px; height:42px; border-radius:12px; display:flex; align-items:center; justify-content:center;
-  font-size:22px; background:linear-gradient(135deg,#1d4ed8,#7c3aed); box-shadow:0 6px 16px rgba(37,99,235,.35); }
-.brand-t { font-weight:800; font-size:1.05rem; }
-.brand-s { font-size:.75rem; opacity:.65; }
-.side-t { font-weight:800; font-size:.95rem; margin:14px 0 4px; padding-bottom:6px; border-bottom:1px solid rgba(128,128,128,.25); }
+/* Brand */
+.brand { display:flex; align-items:center; gap:14px; margin-bottom:10px; padding-bottom:12px; border-bottom:1px solid var(--border); }
+.brand .logo {
+  width:46px; height:46px; border-radius:14px;
+  display:flex; align-items:center; justify-content:center;
+  font-size:22px;
+  background: linear-gradient(145deg, #1d4ed8 0%, #4f46e5 50%, #7c3aed 100%);
+  box-shadow: 0 8px 20px rgba(29,78,216,.35), inset 0 1px 0 rgba(255,255,255,.25);
+}
+.brand-t { font-weight:800; font-size:1.1rem; letter-spacing: -0.01em; }
+.brand-s { font-size:.72rem; opacity:.6; font-weight:500; margin-top:1px; }
+.side-t {
+  font-weight:800; font-size:.88rem; margin:18px 0 8px;
+  padding-bottom:7px; border-bottom:1px solid var(--border);
+  color: var(--slate-800);
+  letter-spacing: -0.01em;
+}
 
-/* هدر */
-.hero { position:relative; overflow:hidden; border-radius:20px; padding:30px 34px; color:#fff; margin-bottom:20px;
-  background: linear-gradient(135deg,#0f172a 0%,#1e3a8a 55%,#2563eb 100%); box-shadow:0 14px 34px rgba(30,58,138,.35); }
-.hero::after { content:""; position:absolute; inset:auto auto -90px -70px; width:300px; height:300px; border-radius:50%;
-  background:radial-gradient(circle, rgba(124,58,237,.55), rgba(124,58,237,0) 70%); }
-.hero-badge { display:inline-block; font-size:.75rem; font-weight:700; padding:4px 12px; border-radius:20px;
-  background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.25); margin-bottom:12px; direction:ltr; }
-.hero-title { font-size:1.85rem; font-weight:800; line-height:1.5; }
-.hero-sub { opacity:.85; margin-top:6px; font-size:.95rem; }
-.hero-chips { margin-top:16px; display:flex; flex-wrap:wrap; gap:8px; position:relative; z-index:1; }
-.hero-chips span { font-size:.78rem; padding:4px 12px; border-radius:20px; background:rgba(255,255,255,.12); direction:ltr; }
+/* Hero */
+.hero {
+  position:relative; overflow:hidden;
+  border-radius: 22px;
+  padding: 32px 36px;
+  color:#fff;
+  margin-bottom: 22px;
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 48%, #1d4ed8 100%);
+  box-shadow: var(--shadow-lg), 0 0 0 1px rgba(255,255,255,.06) inset;
+}
+.hero::before {
+  content:"";
+  position:absolute; inset:0;
+  background: radial-gradient(ellipse 80% 60% at 85% 20%, rgba(124,58,237,.35), transparent 55%),
+              radial-gradient(ellipse 50% 40% at 10% 90%, rgba(59,130,246,.25), transparent 50%);
+  pointer-events:none;
+}
+.hero::after {
+  content:"";
+  position:absolute;
+  right: -60px; bottom: -80px;
+  width:280px; height:280px; border-radius:50%;
+  background: radial-gradient(circle, rgba(255,255,255,.08), transparent 70%);
+  pointer-events:none;
+}
+.hero-badge {
+  display:inline-block; font-size:.72rem; font-weight:700;
+  padding:5px 14px; border-radius:999px;
+  background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.22);
+  margin-bottom:14px; direction:ltr; letter-spacing:0.03em;
+  backdrop-filter: blur(6px);
+}
+.hero-title { font-size:1.9rem; font-weight:800; line-height:1.45; letter-spacing:-0.02em; position:relative; z-index:1; }
+.hero-sub { opacity:.88; margin-top:8px; font-size:.95rem; line-height:1.6; position:relative; z-index:1; }
+.hero-chips { margin-top:18px; display:flex; flex-wrap:wrap; gap:8px; position:relative; z-index:1; }
+.hero-chips span {
+  font-size:.76rem; font-weight:600; padding:5px 13px; border-radius:999px;
+  background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.15);
+  direction:ltr; backdrop-filter: blur(4px);
+}
 
-/* شاخص‌ها */
-.kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-bottom:16px; }
-.kpi { border:1px solid rgba(128,128,128,.25); border-top:4px solid var(--accent); border-radius:16px; padding:16px 18px;
-  background:rgba(128,128,128,.06); transition:transform .15s, box-shadow .15s; }
-.kpi:hover { transform:translateY(-3px); box-shadow:0 10px 24px rgba(0,0,0,.12); }
+/* KPI cards */
+.kpi-grid {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(195px,1fr));
+  gap:14px;
+  margin-bottom:18px;
+}
+.kpi {
+  border:1px solid var(--border);
+  border-top:3px solid var(--accent);
+  border-radius: var(--radius);
+  padding:16px 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+.kpi:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
 .kpi-top { display:flex; justify-content:space-between; align-items:center; }
-.kpi-label { font-size:.82rem; opacity:.7; font-weight:500; }
-.kpi-ico { font-size:1.25rem; }
-.kpi-value { font-size:2rem; font-weight:800; direction:ltr; text-align:right; line-height:1.3; margin-top:6px; }
-.kpi-value small { font-size:.85rem; font-weight:500; opacity:.6; margin-inline-start:6px; }
-.kpi-sub { font-size:.78rem; opacity:.6; margin-top:2px; }
+.kpi-label { font-size:.8rem; opacity:.68; font-weight:600; letter-spacing:-0.01em; }
+.kpi-ico { font-size:1.2rem; opacity:.9; }
+.kpi-value {
+  font-size:1.85rem; font-weight:800; direction:ltr; text-align:right;
+  line-height:1.25; margin-top:8px; letter-spacing:-0.02em;
+}
+.kpi-value small { font-size:.8rem; font-weight:500; opacity:.55; margin-inline-start:5px; }
+.kpi-sub { font-size:.75rem; opacity:.55; margin-top:3px; font-weight:500; }
 
-/* برچسب‌ها و یادداشت‌ها */
-.chips { display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 10px; }
-.chip { font-size:.8rem; font-weight:700; padding:5px 12px; border-radius:20px; border:1px solid; }
-.chip.good { color:#059669; background:rgba(16,185,129,.12); border-color:rgba(16,185,129,.4); }
-.chip.warn { color:#d97706; background:rgba(245,158,11,.12); border-color:rgba(245,158,11,.4); }
-.chip.bad  { color:#dc2626; background:rgba(239,68,68,.12);  border-color:rgba(239,68,68,.4); }
-.chip.neutral { background:rgba(128,128,128,.1); border-color:rgba(128,128,128,.3); }
-.note { padding:10px 14px; border-radius:12px; margin:8px 0; font-size:.9rem; border-inline-start:4px solid; }
-.note.info { background:rgba(37,99,235,.08); border-color:#2563eb; }
-.note.warn { background:rgba(245,158,11,.1); border-color:#f59e0b; }
+/* Chips & notes */
+.chips { display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 12px; }
+.chip {
+  font-size:.78rem; font-weight:700; padding:5px 13px; border-radius:999px;
+  border:1px solid; direction:rtl; unicode-bidi:plaintext;
+}
+.chip.good { color:#047857; background:rgba(16,185,129,.11); border-color:rgba(16,185,129,.32); }
+.chip.warn { color:#b45309; background:rgba(245,158,11,.11); border-color:rgba(245,158,11,.32); }
+.chip.bad  { color:#b91c1c; background:rgba(239,68,68,.10);  border-color:rgba(239,68,68,.32); }
+.chip.neutral { background:rgba(148,163,184,.10); border-color:rgba(148,163,184,.28); color:inherit; }
 
-/* وضعیت ایمنی */
-.status { border-radius:18px; padding:18px 24px; border:1px solid; margin:6px 0 10px; }
-.status.ok  { background:rgba(16,185,129,.1); border-color:rgba(16,185,129,.5); }
-.status.bad { background:rgba(239,68,68,.1);  border-color:rgba(239,68,68,.5); }
-.status.warn { background:rgba(245,158,11,.1); border-color:rgba(245,158,11,.5); }
-.status-t { font-size:1.15rem; font-weight:800; }
-.status-d { font-size:.9rem; opacity:.85; margin-top:4px; }
-.track { position:relative; height:10px; border-radius:6px; background:rgba(128,128,128,.25); margin:16px 0 4px; direction:ltr; }
-.fill { height:100%; border-radius:6px; }
-.limit { position:absolute; top:-5px; left:66.67%; width:2px; height:20px; background:currentColor; opacity:.7; }
-.track-l { display:flex; justify-content:space-between; font-size:.72rem; opacity:.6; direction:ltr; }
+.note {
+  padding:12px 16px; border-radius:12px; margin:8px 0; font-size:.9rem;
+  border-inline-start:4px solid; line-height:1.7;
+}
+.note.info { background:rgba(37,99,235,.07); border-color:#2563eb; }
+.note.warn { background:rgba(245,158,11,.09); border-color:#f59e0b; }
+.note.bad  { background:rgba(239,68,68,.09); border-color:#ef4444; }
 
-/* عنوان بخش و کارت‌های کوچک */
-.sec { display:flex; align-items:center; gap:10px; margin:22px 0 10px; }
-.sec .bar { width:5px; height:24px; border-radius:3px; background:linear-gradient(#2563eb,#8b5cf6); }
-.sec .t { font-size:1.12rem; font-weight:800; }
-.sec .s { font-size:.82rem; opacity:.6; margin-inline-start:6px; }
-.mini-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; margin-bottom:8px; }
-.mini { border:1px solid rgba(128,128,128,.25); border-radius:14px; padding:14px 16px; background:rgba(128,128,128,.06); }
-.mini.hl { border-color:#2563eb; background:rgba(37,99,235,.09); box-shadow:0 0 0 1px #2563eb inset; }
-.mini .l { font-size:.8rem; opacity:.7; }
-.mini .v { font-size:1.45rem; font-weight:800; direction:ltr; text-align:right; }
-.mini .u { font-size:.8rem; opacity:.6; margin-inline-start:4px; font-weight:500; }
-.mini .tag { font-size:.7rem; font-weight:700; color:#2563eb; }
+/* Safety status */
+.status {
+  border-radius:18px; padding:20px 26px; border:1px solid; margin:8px 0 14px;
+  box-shadow: var(--shadow-sm);
+}
+.status.ok  { background:linear-gradient(135deg,rgba(16,185,129,.09),rgba(16,185,129,.04)); border-color:rgba(16,185,129,.4); }
+.status.bad { background:linear-gradient(135deg,rgba(239,68,68,.09),rgba(239,68,68,.04));  border-color:rgba(239,68,68,.4); }
+.status.warn{ background:linear-gradient(135deg,rgba(245,158,11,.09),rgba(245,158,11,.04)); border-color:rgba(245,158,11,.4); }
+.status-t { font-size:1.15rem; font-weight:800; letter-spacing:-0.01em; }
+.status-d { font-size:.9rem; opacity:.88; margin-top:6px; line-height:1.7; }
+.track {
+  position:relative; height:9px; border-radius:999px;
+  background:rgba(148,163,184,.22); margin:18px 0 5px; direction:ltr;
+  overflow:hidden;
+}
+.fill { height:100%; border-radius:999px; transition: width .4s ease; }
+.limit {
+  position:absolute; top:-5px; left:66.67%; width:2px; height:19px;
+  background:currentColor; opacity:.65; border-radius:1px;
+}
+.track-l { display:flex; justify-content:space-between; font-size:.7rem; opacity:.55; direction:ltr; font-weight:500; }
 
-/* تب‌ها و دکمه‌ها */
-.stTabs [data-baseweb="tab-list"] { gap:6px; border-bottom:1px solid rgba(128,128,128,.25); }
-.stTabs [data-baseweb="tab"] { border-radius:10px 10px 0 0; padding:10px 20px; font-weight:700; }
-[data-testid="stFormSubmitButton"] button, .stDownloadButton button { border-radius:12px; font-weight:700; padding:.6rem 1rem; }
-[data-testid="stFormSubmitButton"] button { background:linear-gradient(135deg,#1d4ed8,#2563eb); border:0; box-shadow:0 6px 16px rgba(37,99,235,.35); }
-[data-testid="stFormSubmitButton"] button p { color:#fff; }
+/* Section headers */
+.sec { display:flex; align-items:center; gap:11px; margin:26px 0 12px; }
+.sec .bar {
+  width:4px; height:22px; border-radius:3px;
+  background: linear-gradient(180deg, #2563eb, #7c3aed);
+  flex-shrink:0;
+}
+.sec .t { font-size:1.1rem; font-weight:800; letter-spacing:-0.015em; }
+.sec .s { font-size:.8rem; opacity:.55; margin-inline-start:6px; font-weight:500; }
 
-/* گزارش */
-.rep-sec { display:flex; align-items:center; gap:10px; margin:20px 0 6px; font-weight:800; font-size:1.05rem; direction:rtl; }
-.rep-sec::before { content:""; width:5px; height:20px; border-radius:3px; background:linear-gradient(#2563eb,#8b5cf6); }
-.rep-row { display:flex; justify-content:space-between; align-items:center; gap:14px; padding:9px 6px;
-  border-bottom:1px dashed rgba(128,128,128,.3); direction:rtl; text-align:right; }
-.rep-row .k { opacity:.85; }
+/* Mini cards */
+.mini-grid {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(185px,1fr));
+  gap:12px; margin-bottom:10px;
+}
+.mini {
+  border:1px solid var(--border); border-radius:14px;
+  padding:14px 16px; background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: border-color .15s, box-shadow .15s;
+}
+.mini.hl {
+  border-color: rgba(37,99,235,.45);
+  background: rgba(37,99,235,.07);
+  box-shadow: 0 0 0 1px rgba(37,99,235,.2) inset, var(--shadow-sm);
+}
+.mini .l { font-size:.78rem; opacity:.65; font-weight:500; }
+.mini .v { font-size:1.4rem; font-weight:800; direction:ltr; text-align:right; letter-spacing:-0.02em; margin-top:2px; }
+.mini .u { font-size:.78rem; opacity:.55; margin-inline-start:4px; font-weight:500; }
+.mini .tag { font-size:.68rem; font-weight:700; color:#2563eb; margin-bottom:2px; }
+
+/* Tabs & buttons */
+.stTabs [data-baseweb="tab-list"] {
+  gap:4px; border-bottom:1px solid var(--border);
+  background: transparent;
+}
+.stTabs [data-baseweb="tab"] {
+  border-radius:10px 10px 0 0; padding:11px 18px; font-weight:700;
+  font-size:.9rem;
+}
+[data-testid="stFormSubmitButton"] button,
+.stDownloadButton button {
+  border-radius:12px; font-weight:700; padding:.65rem 1.1rem;
+  transition: transform .12s, box-shadow .12s;
+}
+[data-testid="stFormSubmitButton"] button {
+  background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%);
+  border:0; box-shadow: 0 6px 18px rgba(37,99,235,.32);
+}
+[data-testid="stFormSubmitButton"] button:hover {
+  box-shadow: 0 8px 22px rgba(37,99,235,.42);
+  transform: translateY(-1px);
+}
+[data-testid="stFormSubmitButton"] button p { color:#fff !important; }
+
+/* Report */
+.rep-sec {
+  display:flex; align-items:center; gap:10px; margin:22px 0 8px;
+  font-weight:800; font-size:1.05rem; direction:rtl;
+}
+.rep-sec::before {
+  content:""; width:4px; height:18px; border-radius:3px;
+  background: linear-gradient(180deg,#2563eb,#7c3aed);
+}
+.rep-row {
+  display:flex; justify-content:space-between; align-items:center; gap:14px;
+  padding:10px 8px; border-bottom:1px dashed rgba(148,163,184,.28);
+  direction:rtl; text-align:right;
+}
+.rep-row .k { opacity:.82; direction:rtl; unicode-bidi:plaintext; text-align:right; }
 .rep-row .v { font-weight:800; direction:ltr; unicode-bidi:isolate; text-align:left; white-space:nowrap; }
-.rep-row.hl { background:rgba(37,99,235,.08); border-radius:10px; border-bottom:0; }
-.rep-verdict { margin-top:18px; padding:14px 18px; border-radius:14px; font-weight:700; direction:rtl; text-align:right; }
-.rep-verdict.ok  { background:rgba(16,185,129,.12); border:1px solid rgba(16,185,129,.5); }
-.rep-verdict.bad { background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.5); }
-.rep-verdict.warn { background:rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.5); }
-.rep-title { font-size:1.2rem; font-weight:800; direction:rtl; text-align:right; }
-.rep-date { font-size:.8rem; opacity:.6; direction:rtl; text-align:right; margin-bottom:4px; }
+.rep-row.hl { background:rgba(37,99,235,.07); border-radius:10px; border-bottom:0; }
+.rep-verdict {
+  margin-top:18px; padding:15px 20px; border-radius:14px; font-weight:700;
+  direction:rtl; text-align:right; line-height:1.7;
+}
+.rep-verdict.ok  { background:rgba(16,185,129,.10); border:1px solid rgba(16,185,129,.4); }
+.rep-verdict.bad { background:rgba(239,68,68,.10); border:1px solid rgba(239,68,68,.4); }
+.rep-verdict.warn{ background:rgba(245,158,11,.10); border:1px solid rgba(245,158,11,.4); }
+.rep-title { font-size:1.2rem; font-weight:800; direction:rtl; text-align:right; letter-spacing:-0.015em; }
+.rep-date { font-size:.78rem; opacity:.55; direction:rtl; text-align:right; margin-bottom:6px; }
 
-/* توصیه مهندسی */
-.note.bad { background:rgba(239,68,68,.1); border-color:#ef4444; }
-.adv-sum { border-radius:18px; padding:18px 22px; margin:6px 0 14px; direction:rtl; text-align:right;
-  background:linear-gradient(135deg,rgba(37,99,235,.12),rgba(139,92,246,.10)); border:1px solid rgba(37,99,235,.35); }
-.adv-sum-t { font-weight:800; font-size:1.1rem; margin-bottom:6px; }
-.adv-prio { margin-top:10px; padding-top:10px; border-top:1px dashed rgba(128,128,128,.4); }
-.adv { --c:#2563eb; border:1px solid rgba(128,128,128,.25); border-inline-start:5px solid var(--c); border-radius:14px;
-  padding:14px 18px; margin:10px 0; background:rgba(128,128,128,.05); direction:rtl; text-align:right; }
+/* Engineering advice */
+.adv-sum {
+  border-radius:18px; padding:20px 24px; margin:6px 0 16px;
+  direction:rtl; text-align:right;
+  background: linear-gradient(135deg, rgba(37,99,235,.10), rgba(124,58,237,.07));
+  border:1px solid rgba(37,99,235,.28);
+  box-shadow: var(--shadow-sm);
+}
+.adv-sum-t { font-weight:800; font-size:1.1rem; margin-bottom:8px; letter-spacing:-0.01em; }
+.adv-prio { margin-top:12px; padding-top:12px; border-top:1px dashed rgba(148,163,184,.35); font-size:.92rem; }
+.adv {
+  --c:#2563eb;
+  border:1px solid var(--border);
+  border-inline-start:5px solid var(--c);
+  border-radius:14px; padding:15px 18px; margin:11px 0;
+  background: var(--surface); direction:rtl; text-align:right;
+  box-shadow: var(--shadow-sm);
+}
 .adv.bad { --c:#ef4444; } .adv.warn { --c:#f59e0b; } .adv.ok { --c:#10b981; }
 .adv-h { display:flex; justify-content:space-between; align-items:center; gap:10px; font-weight:800; }
-.adv-ref { font-size:.7rem; font-weight:700; padding:2px 10px; border-radius:12px; background:rgba(37,99,235,.12);
-  color:#2563eb; direction:ltr; white-space:nowrap; }
-.adv-b { margin-top:6px; font-size:.92rem; line-height:1.95; opacity:.95; }
-.adv-li { display:flex; gap:8px; align-items:flex-start; margin-top:6px; font-size:.9rem; line-height:1.9; }
+.adv-ref {
+  font-size:.68rem; font-weight:700; padding:3px 11px; border-radius:999px;
+  background:rgba(37,99,235,.10); color:#2563eb; direction:ltr; white-space:nowrap;
+}
+.adv-b { margin-top:7px; font-size:.91rem; line-height:1.9; opacity:.94; }
+.adv-li { display:flex; gap:8px; align-items:flex-start; margin-top:6px; font-size:.88rem; line-height:1.85; }
 .adv-li > span:first-child { flex:0 0 auto; color:var(--c); }
-.adv-foot { font-size:.78rem; opacity:.6; margin-top:14px; direction:rtl; text-align:right; }
-.foot { text-align:center; font-size:.78rem; opacity:.55; margin:30px 0 6px; }
+.adv-foot { font-size:.76rem; opacity:.55; margin-top:16px; direction:rtl; text-align:right; }
+
+.foot { text-align:center; font-size:.76rem; opacity:.5; margin:36px 0 8px; font-weight:500; }
+
+/* Responsive polish */
+@media (max-width: 768px) {
+  .hero { padding: 24px 20px; border-radius:16px; }
+  .hero-title { font-size:1.45rem; }
+  .kpi-value { font-size:1.55rem; }
+  .block-container { padding-top: 1.8rem; }
+}
 """
 
-C_BLUE, C_PURPLE, C_GREEN, C_AMBER, C_RED = "#2563eb", "#8b5cf6", "#10b981", "#f59e0b", "#ef4444"
-FONT = "Vazirmatn, Tahoma, sans-serif"
+C_BLUE, C_PURPLE, C_GREEN, C_AMBER, C_RED = "#2563eb", "#7c3aed", "#10b981", "#f59e0b", "#ef4444"
+FONT = "Vazirmatn, Tahoma, system-ui, sans-serif"
 DEFAULTS = dict(
     mode_R=False,
     a_text="1, 2, 3, 5, 8, 10, 15, 20, 30, 40, 50, 60, 80, 100, 120, 150",
@@ -381,7 +574,13 @@ def section(title: str, sub: str = "") -> None:
 
 
 def chip(text: str, kind: str = "neutral") -> str:
-    return f'<span class="chip {kind}">{text}</span>'
+    # Isolate numeric runs so percentages, decimals, and units keep their order in RTL text.
+    text = re.sub(
+        r'(?<![\\w.])([+−-]?\\d[\\d,]*(?:\\.\\d+)?(?:\\s*[٪%])?)',
+        r'<bdi dir="ltr">\\1</bdi>',
+        text
+    )
+    return f'<span class="chip {kind}" dir="rtl">{text}</span>'
 
 
 def mini_card(label: str, value: str, unit: str = "", highlight: bool = False, tag: str = "") -> str:
@@ -391,15 +590,16 @@ def mini_card(label: str, value: str, unit: str = "", highlight: bool = False, t
 
 
 def style_fig(fig: go.Figure, height: int = 380) -> go.Figure:
-    grid = "rgba(128,128,128,.2)"
+    grid = "rgba(148,163,184,.22)"
     fig.update_layout(
-        height=height, margin=dict(l=10, r=10, t=30, b=10),
+        height=height, margin=dict(l=12, r=12, t=36, b=12),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family=FONT, size=13), hoverlabel=dict(font_family=FONT),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        font=dict(family=FONT, size=13), hoverlabel=dict(font_family=FONT, bgcolor="rgba(15,23,42,.92)", font_color="#f8fafc"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                    bgcolor="rgba(0,0,0,0)", borderwidth=0),
     )
-    fig.update_xaxes(gridcolor=grid, zeroline=False)
-    fig.update_yaxes(gridcolor=grid, zeroline=False)
+    fig.update_xaxes(gridcolor=grid, zeroline=False, showline=True, linecolor="rgba(148,163,184,.35)", linewidth=1)
+    fig.update_yaxes(gridcolor=grid, zeroline=False, showline=True, linecolor="rgba(148,163,184,.35)", linewidth=1)
     return fig
 
 
@@ -1253,18 +1453,20 @@ def run_analysis(mode_R, a_text, v_text, area, aspect, spacing, d_mm, rod_mode, 
     fit = fit_two_layer(tuple(a_vals), tuple(rho_vals))
 
     geom = make_geometry(area, aspect, spacing, d_mm, rod_mode, rod_len, depth)
+    # Use the same effective depth everywhere; never calculate with one depth and draw another.
+    depth_eff = geom["h"]
     rho_eq = equivalent_resistivity(method, fit, area)
-    rg = grid_resistance(rho_eq, area, geom["LT"], depth)
+    rg = grid_resistance(rho_eq, area, geom["LT"], depth_eff)
     gpr = ig * rg["sverak"]
     mesh = ieee80_mesh_step(rho_eq, ig, geom)
     hs_eff = hs if use_surface else 0.0
     tv = tolerable_voltages(fit["rho1"], rho_s if use_surface else fit["rho1"], hs_eff, weight, ts)
     inp = dict(area=area, aspect=aspect, spacing=spacing, d_mm=d_mm, rod_mode=rod_mode, rod_len=rod_len,
-               length=geom["LT"], depth=depth, ig=ig, ts=ts, weight=weight,
+               length=geom["LT"], depth=depth_eff, ig=ig, ts=ts, weight=weight,
                hs=hs_eff, rho_s=rho_s, real_mode=real_mode)
     try:                                                   # نقشه پتانسیل (اختیاری؛ خطا کل برنامه را نمی‌شکند)
         num = solve_grid_potential(float(area), float(aspect), float(spacing), float(d_mm),
-                                   rod_mode, float(rod_len), float(depth))
+                                   rod_mode, float(rod_len), float(depth_eff))
         num_stats = potential_stats(num, geom, rho_eq, ig, tv)
     except (np.linalg.LinAlgError, MemoryError, ValueError):
         num, num_stats = None, None
@@ -1280,7 +1482,8 @@ st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown(H("""<div class="brand"><div class="logo">⚡</div><div>
-        <div class="brand-t">Grounding Designer</div><div class="brand-s">IEEE Std 80</div></div></div>"""),
+        <div class="brand-t">Grounding Designer</div>
+        <div class="brand-s">Soil &amp; Grid · IEEE Std 80</div></div></div>"""),
                 unsafe_allow_html=True)
     with st.form("inputs"):
         st.markdown('<div class="side-t">📊 داده‌های Wenner</div>', unsafe_allow_html=True)
@@ -1294,7 +1497,8 @@ with st.sidebar:
                                  value=DEFAULTS["aspect"], step=0.1)
         spacing = st.number_input("فاصله هادی‌ها D (m)", min_value=1.0, value=DEFAULTS["spacing"])
         d_mm = st.number_input("قطر هادی (mm)", min_value=4.0, value=DEFAULTS["d_mm"])
-        depth = st.number_input("عمق دفن شبکه (m)", min_value=0.0, value=DEFAULTS["depth"])
+        depth = st.number_input("عمق دفن شبکه (m)", min_value=0.05, value=DEFAULTS["depth"], step=0.05,
+                                help="برای سازگاری محاسبات، حداقل عمق مدل 0.05 m است.")
         rod_mode = st.selectbox("میله‌های زمین", list(ROD_MODES), format_func=ROD_MODES.get)
         rod_len = st.number_input("طول هر میله (m)", min_value=0.5, value=DEFAULTS["rod_len"])
         method = st.selectbox(
@@ -1343,10 +1547,13 @@ mesh_ok_ = mesh_["Em"] <= tv["e_touch"] and mesh_["Es"] <= tv["e_step"]
 # ============================================================
 st.markdown(H("""
 <div class="hero">
-  <div class="hero-badge">IEEE Std 80</div>
+  <div class="hero-badge">IEEE Std 80 · IEEE Std 81</div>
   <div class="hero-title">تحلیل مقاومت ویژه خاک و طراحی شبکه زمین</div>
-  <div class="hero-sub">برازش مدل دولایه Wenner، مقاومت شبکه، ولتاژهای mesh و step و نقشه گرادیان پتانسیل</div>
-  <div class="hero-chips"><span>Wenner</span><span>Two-layer model</span><span>Sverak</span><span>Mesh / Step</span><span>Potential map</span></div>
+  <div class="hero-sub">برازش مدل دولایه Wenner · مقاومت شبکه (Sverak) · ولتاژهای mesh و step · نقشه پتانسیل و گرادیان</div>
+  <div class="hero-chips">
+    <span>Wenner</span><span>Two-layer model</span><span>Sverak</span>
+    <span>Mesh / Step</span><span>Potential map</span><span>RTL</span>
+  </div>
 </div>"""), unsafe_allow_html=True)
 
 mode_chip = chip("حالت پروژه واقعی", "good") if inp["real_mode"] else chip("حالت آموزشی", "neutral")
