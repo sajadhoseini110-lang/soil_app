@@ -46,6 +46,8 @@ def validate_data(a: np.ndarray, rho: np.ndarray):
         raise ValueError(f"تعداد فاصله‌ها ({a.size}) با تعداد مقاومت‌ها ({rho.size}) برابر نیست.")
     if a.size < 4:
         raise ValueError("برای برازش مدل دولایه (۳ پارامتر) حداقل ۴ نقطه اندازه‌گیری لازم است.")
+    if not np.all(np.isfinite(a)) or not np.all(np.isfinite(rho)):
+        raise ValueError("داده‌ها نباید شامل NaN یا بی‌نهایت باشند.")
     if np.any(a <= 0) or np.any(rho <= 0):
         raise ValueError("تمام فاصله‌ها و مقاومت‌ها باید مثبت باشند.")
     order = np.argsort(a)
@@ -632,16 +634,57 @@ def fig_3d_soil(fit: dict, g: dict, depth: float, hs: float, exag: float = 3.0) 
     return fig
 
 
+def _field_cfg(view: str, stt: dict, tv: dict):
+    """(داده، واحد، حد مجاز، طیف رنگ، zmin، zmax) برای هر نمای نقشه."""
+    return {
+        "ولتاژ تماس": (stt["touch"], "V", tv["e_touch"], "RdYlGn_r", 0.0, 2.0 * tv["e_touch"]),
+        "ولتاژ گام": (stt["step"], "V", tv["e_step"], "RdYlGn_r", 0.0, 2.0 * tv["e_step"]),
+        "پتانسیل سطح": (stt["V"], "V", None, "Turbo", 0.0, stt["gpr"]),
+        "گرادیان پتانسیل": (stt["grad"], "V/m", tv["e_step"], "Turbo", 0.0, None),
+    }[view]
+
+
+def potential_surface_fig(view: str, num: dict, stt: dict, g: dict, tv: dict) -> go.Figure:
+    """نمای سه‌بعدی (سطح) پتانسیل / ولتاژ تماس / گام / گرادیان، با صفحه حد مجاز و کانتور روی کف."""
+    Z, unit, limit, cscale, zmin, zmax = _field_cfg(view, stt, tv)
+    k = max(1, int(np.ceil(max(Z.shape) / 110)))              # سبک‌سازی برای موبایل
+    xs, ys, Zs = num["xs"][::k], num["ys"][::k], Z[::k, ::k]
+    top = float(max(Zs.max(), limit or 0.0)) * 1.08
+    kw = dict(cmin=zmin) if zmin is not None else {}
+    if zmax is not None:
+        kw["cmax"] = zmax
+    fig = go.Figure(go.Surface(
+        x=xs, y=ys, z=Zs, colorscale=cscale, colorbar=dict(title=unit), name=view, **kw,
+        contours=dict(z=dict(show=True, usecolormap=True, project=dict(z=True))),
+        hovertemplate="x = %{x:.1f} m<br>y = %{y:.1f} m<br>%{z:,.1f} " + unit + "<extra></extra>"))
+    if limit is not None:
+        fig.add_trace(go.Surface(x=[xs[0], xs[-1]], y=[ys[0], ys[-1]], z=[[limit, limit], [limit, limit]],
+                                 opacity=0.35, showscale=False, colorscale=[[0, "#111111"], [1, "#111111"]],
+                                 name=f"حد مجاز ({limit:,.0f} {unit})", showlegend=True, hoverinfo="skip"))
+    lx, ly = [], []
+    for y in g["ys"]:
+        lx += [0, g["Lx"], None]; ly += [y, y, None]
+    for x in g["xs"]:
+        lx += [x, x, None]; ly += [0, g["Ly"], None]
+    fig.add_trace(go.Scatter3d(x=lx, y=ly, z=[0.0] * len(lx), mode="lines", name="هادی‌های شبکه (روی کف)",
+                               line=dict(color="#111111", width=3), hoverinfo="skip"))
+    ex, ey = float(xs[-1] - xs[0]), float(ys[-1] - ys[0])
+    m = max(ex, ey)
+    fig.update_layout(
+        height=560, margin=dict(l=0, r=0, t=30, b=0), paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONT, size=12),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1),
+        scene=dict(xaxis=dict(title="X (m)"), yaxis=dict(title="Y (m)"),
+                   zaxis=dict(title=f"{view} ({unit})", range=[0, top]),
+                   aspectmode="manual", aspectratio=dict(x=ex / m, y=ey / m, z=0.5),
+                   camera=dict(eye=dict(x=1.6, y=-1.6, z=1.0))))
+    return fig
+
+
 def potential_map_fig(view: str, num: dict, stt: dict, g: dict, tv: dict) -> go.Figure:
     """نقشه رنگی پتانسیل / ولتاژ تماس / ولتاژ گام / گرادیان با خط حد مجاز و جانمایی هادی‌ها."""
     xs, ys = num["xs"], num["ys"]
-    cfg = {
-        "ولتاژ تماس": (stt["touch"], "V", tv["e_touch"], "RdYlGn_r", 0.0, 2.0 * tv["e_touch"]),
-        "ولتاژ گام": (stt["step"], "V", tv["e_step"], "RdYlGn_r", 0.0, 2.0 * tv["e_step"]),
-        "پتانسیل سطح": (stt["V"], "V", None, "Turbo", None, stt["gpr"]),
-        "گرادیان پتانسیل": (stt["grad"], "V/m", tv["e_step"], "Turbo", 0.0, None),
-    }
-    Z, unit, limit, cscale, zmin, zmax = cfg[view]
+    Z, unit, limit, cscale, zmin, zmax = _field_cfg(view, stt, tv)
     fig = go.Figure(go.Heatmap(x=xs, y=ys, z=Z, colorscale=cscale, zmin=zmin, zmax=zmax, zsmooth="best",
                                colorbar=dict(title=unit), name=view,
                                hovertemplate="x = %{x:.1f} m<br>y = %{y:.1f} m<br>%{z:,.1f} " + unit + "<extra></extra>"))
@@ -1415,9 +1458,16 @@ with tab_map:
         ]) + '</div>', unsafe_allow_html=True)
 
         view = st.radio("نمایش", ["ولتاژ تماس", "ولتاژ گام", "پتانسیل سطح", "گرادیان پتانسیل"], horizontal=True)
-        st.plotly_chart(potential_map_fig(view, num_, stt_, geom_, tv), use_container_width=True)
-        st.markdown('<div class="note info">خط مشکی حد مجاز است؛ ناحیه داخل آن از حد عبور کرده است. '
-                    'رنگ سبز یعنی ایمن، زرد نزدیک حد و قرمز بالاتر از حد.</div>', unsafe_allow_html=True)
+        dim = st.radio("بعد نمایش", ["۳بعدی (سطح)", "۲بعدی (نقشه رنگی)"], horizontal=True)
+        if dim.startswith("۳"):
+            st.plotly_chart(potential_surface_fig(view, num_, stt_, geom_, tv), use_container_width=True)
+            st.markdown('<div class="note info">صفحه مشکی نیمه‌شفاف حد مجاز است؛ هر جا سطح از آن بالاتر رفته ناایمن است. '
+                        'با ماوس یا انگشت بچرخانید؛ کانتورها روی کف و هادی‌ها با خط مشکی نشان داده شده‌اند.</div>',
+                        unsafe_allow_html=True)
+        else:
+            st.plotly_chart(potential_map_fig(view, num_, stt_, geom_, tv), use_container_width=True)
+            st.markdown('<div class="note info">خط مشکی حد مجاز است؛ ناحیه داخل آن از حد عبور کرده است. '
+                        'رنگ سبز یعنی ایمن، زرد نزدیک حد و قرمز بالاتر از حد.</div>', unsafe_allow_html=True)
 
         section("محدوده گرادیان پتانسیل", "بیشینه و کمینه روی نقشه")
         lo_, hi_ = stt_["grad_in"]
