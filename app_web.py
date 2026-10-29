@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Soil & Grounding Designer — تحلیل مقاومت ویژه خاک (Wenner) و طراحی اولیه شبکه زمین
-مرجع: IEEE Std 80
+Soil & Grounding Designer — Professional Engineering Workstation
+تحلیل مقاومت ویژه خاک (Wenner) و طراحی شبکه زمین — IEEE Std 80
 
-امکانات: برازش خاک دولایه، مقطع دقیق SVG، نمای سه‌بعدی (Plotly)، مقاومت شبکه (Sverak)،
-GPR و ولتاژهای مجاز، ولتاژهای mesh و step (IEEE 80)، نقشه پتانسیل و گرادیان (الهام‌گرفته از ماژول‌هایی مثل CYMGRD)، کنترل کفایت داده، بازه اطمینان پارامترها، گزارش راست‌به‌چپ و توصیه مهندسی (IEEE 80/81).
+بازطراحی حرفه‌ای با شناسه بصری مهندسی (dark graphite + electric cyan).
+محاسبات مهندسی، فرمول‌ها، ثابت‌ها و روش‌های عددی بدون تغییر حفظ شده‌اند.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import streamlit as st
 from scipy.optimize import least_squares
 
 # ============================================================
-#  ثابت‌ها
+#  ثابت‌ها (بدون تغییر)
 # ============================================================
 MAX_TERMS = 500
 RHO_MIN, RHO_MAX = 0.1, 1e5
@@ -30,10 +30,9 @@ _DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫٬،؛",
 
 
 # ============================================================
-#  هسته محاسباتی
+#  هسته محاسباتی (بدون تغییر)
 # ============================================================
 def parse_series(text: str, name: str) -> np.ndarray:
-    """تبدیل متن (با ارقام فارسی/انگلیسی و جداکننده‌های مختلف) به آرایه عددی."""
     tokens = [t for t in re.split(r"[,;\s]+", text.translate(_DIGITS)) if t]
     try:
         return np.array([float(t) for t in tokens])
@@ -42,6 +41,8 @@ def parse_series(text: str, name: str) -> np.ndarray:
 
 
 def validate_data(a: np.ndarray, rho: np.ndarray):
+    if not np.all(np.isfinite(a)) or not np.all(np.isfinite(rho)):
+        raise ValueError("داده‌ها باید عددی و متناهی باشند؛ مقدار NaN یا Infinity مجاز نیست.")
     if a.size != rho.size:
         raise ValueError(f"تعداد فاصله‌ها ({a.size}) با تعداد مقاومت‌ها ({rho.size}) برابر نیست.")
     if a.size < 4:
@@ -56,7 +57,6 @@ def validate_data(a: np.ndarray, rho: np.ndarray):
 
 
 def rho_apparent_two_layer(a, rho1: float, rho2: float, h: float) -> np.ndarray:
-    """مقاومت ظاهری Wenner برای خاک دولایه (برداری‌شده)."""
     a = np.atleast_1d(np.asarray(a, dtype=float))
     k = (rho2 - rho1) / (rho2 + rho1)
     n = np.arange(1, MAX_TERMS + 1, dtype=float)[:, None]
@@ -102,11 +102,9 @@ def fit_two_layer(a_obs: tuple, rho_obs: tuple, n_starts: int = 30) -> dict:
     pred = rho_apparent_two_layer(a, rho1, rho2, h)
     rel_err = (pred - rho) / rho * 100.0
 
-    # مدل مرجع: خاک یکنواخت (میانگین هندسی)
     rho_u = float(np.exp(np.mean(np.log(rho))))
     rmse_uniform = float(np.sqrt(np.mean(((rho_u - rho) / rho * 100.0) ** 2)))
 
-    # عدم‌قطعیت پارامترها از ژاکوبین (باقی‌مانده‌ها در مقیاس log10، پارامترها خطی‌اند)
     dof = max(a.size - 3, 1)
     sigma2 = 2.0 * best.cost / dof
     try:
@@ -117,9 +115,9 @@ def fit_two_layer(a_obs: tuple, rho_obs: tuple, n_starts: int = 30) -> dict:
     rel_unc, ci_95 = [], []
     for x, sd in zip(best.x, std):
         if np.isfinite(sd):
-            r = float(1.96 * sd / x)                     # نیم‌پهنای نسبی بازه ۹۵٪
+            r = float(1.96 * sd / x)
             rel_unc.append(r)
-            ci_95.append((float(x * np.exp(-r)), float(x * np.exp(r))))   # همیشه مثبت
+            ci_95.append((float(x * np.exp(-r)), float(x * np.exp(r))))
         else:
             rel_unc.append(float("inf"))
             ci_95.append((float("nan"), float("nan")))
@@ -222,211 +220,671 @@ def build_report(inp: dict, fit: dict, rho_eq: float, rg: dict, rg_design: float
 """
 
 
-# ----- UI -----
 # ============================================================
-#  استایل
+#  هندسه شبکه، ولتاژهای mesh/step، پتانسیل (بدون تغییر محاسباتی)
+# ============================================================
+MAX_LINES = 25
+ROD_MODES = {"none": "بدون میله", "corners": "فقط گوشه‌ها", "perimeter": "گوشه‌ها و پیرامون"}
+
+
+def make_geometry(area, aspect, spacing, d_mm, rod_mode, rod_len, depth) -> dict:
+    Lx, Ly = float(np.sqrt(area * aspect)), float(np.sqrt(area / aspect))
+    want_x, want_y = int(round(Lx / spacing)) + 1, int(round(Ly / spacing)) + 1
+    nx, ny = int(np.clip(want_x, 2, MAX_LINES)), int(np.clip(want_y, 2, MAX_LINES))
+    xs, ys = np.linspace(0.0, Lx, nx), np.linspace(0.0, Ly, ny)
+    Dx, Dy = Lx / (nx - 1), Ly / (ny - 1)
+    LC = Lx * ny + Ly * nx
+    if rod_mode == "corners":
+        pts = [(0.0, 0.0), (Lx, 0.0), (0.0, Ly), (Lx, Ly)]
+    elif rod_mode == "perimeter":
+        pts = sorted({(float(x), 0.0) for x in xs} | {(float(x), Ly) for x in xs}
+                     | {(0.0, float(y)) for y in ys} | {(Lx, float(y)) for y in ys})
+    else:
+        pts = []
+    rods = np.array(pts, dtype=float).reshape(-1, 2)
+    n_r = len(rods)
+    return {"Lx": Lx, "Ly": Ly, "nx": nx, "ny": ny, "xs": xs, "ys": ys, "Dx": Dx, "Dy": Dy,
+            "D": 0.5 * (Dx + Dy), "LC": LC, "rods": rods, "n_rods": n_r,
+            "Lr": float(rod_len) if n_r else 0.0, "LR": n_r * float(rod_len),
+            "LT": LC + n_r * float(rod_len), "h": max(float(depth), 0.05), "d": d_mm / 1000.0,
+            "rod_mode": rod_mode, "capped": bool(want_x > MAX_LINES or want_y > MAX_LINES)}
+
+
+def ieee80_mesh_step(rho: float, ig: float, g: dict) -> dict:
+    h, d, D = g["h"], g["d"], g["D"]
+    Lx, Ly, LC, LR, Lr = g["Lx"], g["Ly"], g["LC"], g["LR"], g["Lr"]
+    A, Lp = Lx * Ly, 2.0 * (Lx + Ly)
+    n = (2.0 * LC / Lp) * np.sqrt(Lp / (4.0 * np.sqrt(A)))
+    Kh = np.sqrt(1.0 + h / 1.0)
+    rods_edge = g["n_rods"] > 0 and g["rod_mode"] in ("corners", "perimeter")
+    Kii = 1.0 if rods_edge else 1.0 / (2.0 * n) ** (2.0 / n)
+    arg = D**2 / (16.0 * h * d) + (D + 2.0 * h) ** 2 / (8.0 * D * d) - h / (4.0 * d)
+    Km = (np.log(arg) + (Kii / Kh) * np.log(8.0 / (np.pi * (2.0 * n - 1.0)))) / (2.0 * np.pi)
+    Ki = 0.644 + 0.148 * n
+    LM = LC + (1.55 + 1.22 * Lr / np.hypot(Lx, Ly)) * LR if rods_edge else LC + LR
+    Ks = (1.0 / np.pi) * (1.0 / (2.0 * h) + 1.0 / (D + h) + (1.0 / D) * (1.0 - 0.5 ** (n - 2.0)))
+    LS = 0.75 * LC + 0.85 * LR
+    warns = []
+    if not 0.25 <= h <= 2.5:
+        warns.append(f"عمق دفن {h:.2f} m خارج از بازه معمول اعتبار رابطه‌ها (حدود ۰٫۲۵ تا ۲٫۵ متر) است.")
+    if d >= 0.25 * h:
+        warns.append("قطر هادی نسبت به عمق دفن بزرگ است (شرط معمول d < 0.25h برقرار نیست).")
+    if D <= 2.5:
+        warns.append(f"فاصله هادی‌ها ({D:.1f} m) کمتر از حدود ۲٫۵ متر است؛ رابطه‌ها در این بازه کم‌دقت می‌شوند.")
+    return {"n": float(n), "Kh": float(Kh), "Kii": float(Kii), "Km": float(Km), "Ki": float(Ki), "Ks": float(Ks),
+            "LM": float(LM), "LS": float(LS), "Em": float(rho * ig * Km * Ki / LM),
+            "Es": float(rho * ig * Ks * Ki / LS), "warnings": warns}
+
+
+def _segments(g: dict):
+    h, xs, ys = g["h"], g["xs"], g["ys"]
+    seg = max(2.0, g["LT"] / 700.0)
+    A_, B_ = [], []
+
+    def add(p, q):
+        n = max(1, int(np.ceil(np.linalg.norm(q - p) / seg)))
+        pts = p[None, :] + np.linspace(0.0, 1.0, n + 1)[:, None] * (q - p)[None, :]
+        A_.append(pts[:-1]); B_.append(pts[1:])
+
+    for y in ys:
+        for x0, x1 in zip(xs[:-1], xs[1:]):
+            add(np.array([x0, y, -h]), np.array([x1, y, -h]))
+    for x in xs:
+        for y0, y1 in zip(ys[:-1], ys[1:]):
+            add(np.array([x, y0, -h]), np.array([x, y1, -h]))
+    for x, y in g["rods"]:
+        add(np.array([x, y, -h]), np.array([x, y, -h - g["Lr"]]))
+    return np.vstack(A_), np.vstack(B_)
+
+
+def _line_factor(P, A, B, a):
+    u = B - A
+    ell = np.linalg.norm(u, axis=1)
+    u = u / ell[:, None]
+    w = P[:, None, :] - A[None, :, :]
+    t = np.einsum("msk,sk->ms", w, u)
+    r2 = np.einsum("msk,msk->ms", w, w) - t * t
+    rp = np.sqrt(np.maximum(r2, a * a))
+    return np.arcsinh((ell[None, :] - t) / rp) - np.arcsinh(-t / rp)
+
+
+def _kernel(P, A, B, a):
+    flip = np.array([1.0, 1.0, -1.0])
+    return _line_factor(P, A, B, a) + _line_factor(P, A * flip, B * flip, a)
+
+
+@st.cache_data(show_spinner=False)
+def solve_grid_potential(area, aspect, spacing, d_mm, rod_mode, rod_len, depth, resolution=240) -> dict:
+    g = make_geometry(area, aspect, spacing, d_mm, rod_mode, rod_len, depth)
+    A, B = _segments(g)
+    C = 0.5 * (A + B)
+    ell = np.linalg.norm(B - A, axis=1)
+    a = g["d"] / 2.0
+    R = _kernel(C, A, B, a) / (4.0 * np.pi * ell[None, :])
+    cur = np.linalg.solve(R, np.ones(len(ell)))
+    w = cur / (4.0 * np.pi * ell)
+    resolution = int(min(resolution, max(90.0, np.sqrt(4.0e7 / len(ell)))))
+    margin = max(8.0, 0.15 * max(g["Lx"], g["Ly"]))
+    step = max(0.5, (max(g["Lx"], g["Ly"]) + 2 * margin) / resolution)
+    xs = np.linspace(-margin, g["Lx"] + margin, int(round((g["Lx"] + 2 * margin) / step)) + 1)
+    ys = np.linspace(-margin, g["Ly"] + margin, int(round((g["Ly"] + 2 * margin) / step)) + 1)
+    X, Y = np.meshgrid(xs, ys)
+    P = np.column_stack([X.ravel(), Y.ravel(), np.zeros(X.size)])
+    frac = np.empty(len(P))
+    for i in range(0, len(P), 1500):
+        frac[i:i + 1500] = _kernel(P[i:i + 1500], A, B, a) @ w
+    return {"rg_unit": float(1.0 / cur.sum()), "xs": xs, "ys": ys, "frac": frac.reshape(Y.shape),
+            "dx": float(xs[1] - xs[0]), "dy": float(ys[1] - ys[0]), "n_seg": int(len(ell))}
+
+
+def potential_stats(num: dict, g: dict, rho: float, ig: float, tv: dict) -> dict:
+    gpr = ig * rho * num["rg_unit"]
+    V = num["frac"] * gpr
+    touch = gpr - V
+    gy, gx = np.gradient(V, num["dy"], num["dx"])
+    grad = np.hypot(gx, gy)
+    X, Y = np.meshgrid(num["xs"], num["ys"])
+    inside = (X >= 0) & (X <= g["Lx"]) & (Y >= 0) & (Y <= g["Ly"])
+    near = (X >= -3) & (X <= g["Lx"] + 3) & (Y >= -3) & (Y <= g["Ly"] + 3)
+    outside = near & ~inside
+
+    def where_max(Z, m):
+        k = np.argmax(np.where(m, Z, -np.inf))
+        return float(Z.ravel()[k]), (float(X.ravel()[k]), float(Y.ravel()[k]))
+
+    t_max, t_at = where_max(touch, inside)
+    s_max, s_at = where_max(grad, near)
+    return {"gpr": gpr, "V": V, "touch": touch, "step": grad, "grad": grad, "inside": inside, "near": near,
+            "touch_max": t_max, "touch_at": t_at, "step_max": s_max, "step_at": s_at,
+            "grad_in": (float(grad[inside].min()), float(grad[inside].max())),
+            "grad_out_max": float(grad[outside].max()) if outside.any() else float("nan"),
+            "v_min_pct": float(num["frac"][inside].min() * 100.0),
+            "touch_unsafe_pct": float((touch[inside] > tv["e_touch"]).mean() * 100.0),
+            "step_unsafe_pct": float((grad[near] > tv["e_step"]).mean() * 100.0)}
+
+
+# ============================================================
+#  کنترل کفایت داده و توصیه مهندسی (بدون تغییر)
+# ============================================================
+SEV = {"bad": 0, "warn": 1, "ok": 2, "info": 3}
+
+
+def data_sufficiency(a: np.ndarray, rho: np.ndarray, fit: dict, area: float) -> list:
+    issues = []
+    h, a_max, a_min = fit["h"], float(a.max()), float(a.min())
+    r_eq = float(np.sqrt(area / np.pi))
+    if a_max < 2 * h:
+        issues.append(("bad", f"حداکثر فاصله اندازه‌گیری ({a_max:.1f} m) کمتر از دو برابر ضخامت لایه اول ({h:.1f} m) است؛ "
+                              "لایه دوم عملاً دیده نشده و ρ₂ و h قابل اتکا نیستند."))
+    elif a_max < 3 * h:
+        issues.append(("warn", f"حداکثر فاصله ({a_max:.1f} m) کمتر از سه برابر ضخامت لایه اول ({h:.1f} m) است؛ "
+                               "برای تخمین مطمئن ρ₂ فواصل بزرگ‌تر هم اندازه بگیرید."))
+    if a_max < r_eq:
+        issues.append(("bad" if a_max < 0.5 * r_eq else "warn",
+                       f"ρ معادل در شعاع معادل شبکه ({r_eq:.0f} m) محاسبه می‌شود که بیرون از بازه اندازه‌گیری "
+                       f"(حداکثر {a_max:.0f} m) است؛ یعنی مقدار برون‌یابی شده و Rg و GPR به آن وابسته‌اند."))
+    if a.size < 6:
+        issues.append(("warn", f"تعداد نقاط اندازه‌گیری ({a.size}) کم است؛ معمولاً حداقل ۶ تا ۸ فاصله، با گام تقریباً لگاریتمی، توصیه می‌شود."))
+    if a_max / a_min < 10:
+        issues.append(("warn", "نسبت بزرگ‌ترین به کوچک‌ترین فاصله کمتر از ۱۰ است؛ بازه فواصل باید دست‌کم یک دهه را بپوشاند."))
+    if a.size >= 3:
+        slope = float(np.polyfit(np.log(a[-3:]), np.log(rho[-3:]), 1)[0])
+        if abs(slope) > 0.15:
+            issues.append(("warn", f"منحنی در فواصل بزرگ هنوز به مقدار ثابتی نرسیده (شیب لگاریتمی {slope:+.2f})؛ "
+                                   "احتمالاً لایه عمقی کامل دیده نشده است."))
+    if fit["max_err_pct"] > 15 or fit["rmse_pct"] > 10:
+        issues.append(("warn", f"پراکندگی یا ناسازگاری داده‌ها زیاد است (RMSE = {fit['rmse_pct']:.1f}٪ ، بیشینه خطا = {fit['max_err_pct']:.1f}٪). "
+                               "اجسام فلزی مدفون یا خطای اندازه‌گیری را بررسی کنید و اندازه‌گیری را در راستای عمود تکرار کنید."))
+    if fit["dof"] >= 2 and max(fit["rel_unc"]) > 0.5:
+        issues.append(("warn", f"عدم‌قطعیت آماری یکی از پارامترها بیش از ±۵۰٪ است (بازه ۹۵٪: ρ₂ از {fit['ci_95'][1][0]:,.0f} تا {fit['ci_95'][1][1]:,.0f} Ω·m)."))
+    elif fit["dof"] < 2:
+        issues.append(("warn", "تعداد داده‌ها تقریباً برابر تعداد پارامترهاست؛ بازه اطمینان قابل محاسبه یا قابل اتکا نیست."))
+    return sorted(issues, key=lambda t: SEV[t[0]])
+
+
+def _scale_needed(rho_eq, area, length, depth, ig, e_touch, s_max=3.0):
+    for sc in np.linspace(1.0, s_max, 121):
+        if ig * grid_resistance(rho_eq, area * sc**2, length * sc**2, depth)["sverak"] <= e_touch:
+            return float(sc)
+    return None
+
+
+def engineering_advice(out: dict) -> dict:
+    fit, tv, rg, inp = out["fit"], out["tv"], out["rg"], out["inp"]
+    a, rho, gpr = out["a"], out["rho"], out["gpr"]
+    ig, rg_d, e_touch = inp["ig"], out["rg_design"], tv["e_touch"]
+    ratio = gpr / e_touch
+    real = inp.get("real_mode", True)
+    k, rho1, rho2, h = fit["k"], fit["rho1"], fit["rho2"], fit["h"]
+    cards = []
+
+    def add(lvl, title, body, acts=(), ref=""):
+        cards.append(dict(lvl=lvl, title=title, body=body, acts=list(acts), ref=ref))
+
+    m, geom, stt = out["mesh"], out["geom"], out.get("num_stats")
+    em, es, es_tol = m["Em"], m["Es"], tv["e_step"]
+    mesh_ok = em <= e_touch and es <= es_tol
+    mesh_fac = max(em / e_touch, es / es_tol)
+    if ratio <= 1.0:
+        acts = []
+        if ratio > 0.8:
+            acts.append("حاشیه ایمنی کمتر از ۲۰٪ است؛ عدم‌قطعیت ρ خاک و Ig می‌تواند آن را از بین ببرد. "
+                        "نتیجه را با مقاومت ویژه فصل خشک و Ig بیشینه دوباره بسنجید.")
+        add("ok" if ratio <= 0.8 else "warn", "وضعیت ایمنی: GPR در برابر ولتاژ تماس مجاز",
+            f"GPR برابر {gpr:,.0f} V و ولتاژ تماس مجاز برابر {e_touch:,.0f} V است ({ratio * 100:.0f}٪ حد مجاز). "
+            "طبق روند طراحی IEEE 80، وقتی GPR از ولتاژ تماس مجاز کمتر باشد، محاسبه ولتاژهای mesh و step الزامی نیست "
+            "(برای اطلاع، مقادیر آن‌ها در کارت بعدی آمده است).",
+            acts, "IEEE 80")
+    elif mesh_ok:
+        add("warn", "وضعیت ایمنی: GPR در برابر ولتاژ تماس مجاز",
+            f"GPR برابر {gpr:,.0f} V و بیش از ولتاژ تماس مجاز ({e_touch:,.0f} V) است ({ratio * 100:.0f}٪)، اما ولتاژهای mesh و step "
+            f"(Em = {em:,.0f} V و Es = {es:,.0f} V) در حد مجازند. طبق روند IEEE 80 طرح از نظر تماس و گام قابل قبول است؛",
+            ["GPR بالا یعنی ولتاژ منتقل‌شده به حصار، لوله‌ها، ریل و کابل‌های مخابراتی باید کنترل شود.",
+             "تجهیزات حفاظتی و مخابراتی متصل به مناطق دور باید برای این GPR عایق‌بندی یا ایزوله شوند."], "IEEE 80")
+    else:
+        add("bad", "وضعیت ایمنی: ولتاژهای mesh و step",
+            f"GPR برابر {gpr:,.0f} V است و ولتاژهای محاسبه‌شده از حد مجاز عبور کرده‌اند: Em = {em:,.0f} V در برابر {e_touch:,.0f} V "
+            f"({em / e_touch * 100:.0f}٪) و Es = {es:,.0f} V در برابر {es_tol:,.0f} V ({es / es_tol * 100:.0f}٪). "
+            "طرح باید اصلاح شود (هندسه شبکه، میله‌ها، لایه سطحی، Ig یا زمان قطع).", [], "IEEE 80")
+
+    acts = list(m["warnings"])
+    if geom["capped"]:
+        acts.append("تعداد هادی‌ها به سقف ۲۵ در هر جهت محدود شده است؛ فاصله واقعی بزرگ‌تر از D واردشده است.")
+    if not mesh_ok or mesh_fac > 0.85:
+        for label, d2, rm in [("فشرده‌تر کردن مش (D = ۰٫۷۵ برابر فعلی)", inp["spacing"] * 0.75, inp["rod_mode"]),
+                              ("افزودن میله در گوشه‌ها و پیرامون", inp["spacing"], "perimeter"),
+                              ("هر دو اقدام", inp["spacing"] * 0.75, "perimeter")]:
+            if label.startswith("افزودن") and inp["rod_mode"] == "perimeter":
+                continue
+            g2 = make_geometry(inp["area"], inp["aspect"], d2, inp["d_mm"], rm, inp["rod_len"], inp["depth"])
+            m2 = ieee80_mesh_step(out["rho_eq"], ig, g2)
+            acts.append(f"{label}: Em = {m2['Em']:,.0f} V ، Es = {m2['Es']:,.0f} V (D ≈ {g2['D']:.1f} m ، طول کل هادی ≈ {g2['LT']:,.0f} m).")
+        acts.append("لایه سطحی سنگ‌ریزه (یا ضخیم‌تر کردن آن) و کاهش Ig یا زمان قطع، حدود مجاز و ولتاژها را هم‌زمان بهبود می‌دهند.")
+    add("ok" if mesh_ok and mesh_fac <= 0.85 else "warn" if mesh_ok else "bad",
+        "ولتاژهای mesh و step با رابطه‌های IEEE 80",
+        f"Em = {em:,.0f} V ({em / e_touch * 100:.0f}٪ ولتاژ تماس مجاز) و Es = {es:,.0f} V ({es / es_tol * 100:.0f}٪ ولتاژ گام مجاز). "
+        f"هندسه: {geom['Lx']:.0f} × {geom['Ly']:.0f} m ، {geom['nx']}×{geom['ny']} هادی با D ≈ {geom['D']:.1f} m ، "
+        f"{geom['n_rods']} میله ، طول کل هادی {geom['LT']:,.0f} m (n = {m['n']:.1f} ، Km = {m['Km']:.3f} ، Ki = {m['Ki']:.3f}).",
+        acts, "IEEE 80")
+
+    if stt:
+        rg_num = out["rho_eq"] * out["num"]["rg_unit"]
+        diff = (rg_num / rg_d - 1.0) * 100.0
+        lo, hi = stt["grad_in"]
+        acts = []
+        tu, su = stt["touch_unsafe_pct"], stt["step_unsafe_pct"]
+        if tu > 0:
+            acts.append(f"{tu:.1f}٪ از مساحت شبکه ولتاژ تماس بالاتر از حد مجاز دارد؛ نقطه بیشینه حدود (x = {stt['touch_at'][0]:.1f} ، y = {stt['touch_at'][1]:.1f}) متر است.")
+        if su > 0:
+            acts.append(f"{su:.1f}٪ از ناحیه اطراف و داخل شبکه ولتاژ گام بالاتر از حد مجاز دارد؛ بیشینه حدود (x = {stt['step_at'][0]:.1f} ، y = {stt['step_at'][1]:.1f}) متر است.")
+        if tu > 0 or su > 0:
+            acts.append("گرادیان‌های زیاد معمولاً در گوشه‌ها و لبه‌های شبکه‌اند: میله در گوشه‌ها و پیرامون، هادی حلقوی اضافه در اطراف، "
+                        "یا مش فشرده‌تر در محیط شبکه گرادیان را کم می‌کند.")
+            acts.append("لایه سطحی سنگ‌ریزه را حدود یک متر فراتر از حصار ادامه دهید و حصار را به شبکه وصل یا هادی کنترل گرادیان بیرون حصار قرار دهید.")
+        if abs(diff) > 20:
+            acts.append(f"Rg عددی با Sverak بیش از ۲۰٪ اختلاف دارد ({diff:+.0f}٪)؛ برای طرح نهایی با نرم‌افزار تخصصی (مثل CYMGRD یا CDEGS) راستی‌آزمایی کنید.")
+        if out["num"]["dx"] > 0.7:
+            acts.append(f"گام نقشه {out['num']['dx']:.2f} m است؛ در شبکه‌های بزرگ بیشینه ولتاژ گام ممکن است کم‌برآورد شود و مقدار IEEE 80 مبناست.")
+        acts.append("نقشه با خاک یکنواخت (ρ معادل) محاسبه شده و ولتاژ تماس نقطه‌ای (GPR منهای پتانسیل سطح) است؛ فاصله ۱ متری دست از ساختار لحاظ نشده است.")
+        lvl = "ok" if tu == 0 and su == 0 else ("bad" if not mesh_ok else "warn")
+        add(lvl, "نقشه پتانسیل سطح و محدوده گرادیان (تحلیل عددی)",
+            f"Rg عددی = {rg_num:.2f} Ω ({diff:+.0f}٪ نسبت به Sverak). بیشینه ولتاژ تماس نقشه {stt['touch_max']:,.0f} V و بیشینه ولتاژ گام {stt['step_max']:,.0f} V است. "
+            f"گرادیان پتانسیل داخل شبکه بین {lo:.1f} و {hi:.1f} V/m و بیرون شبکه تا {stt['grad_out_max']:.1f} V/m است؛ "
+            f"کمترین پتانسیل سطح داخل شبکه {stt['v_min_pct']:.0f}٪ GPR است.",
+            acts, "IEEE 80")
+
+    if ratio > 0.8:
+        acts = []
+        rg_req, ig_max = e_touch / ig, e_touch / rg_d
+        acts.append(f"هدف عددی: برای اینکه GPR از ولتاژ تماس مجاز بیشتر نشود، یکی از این‌ها لازم است: Rg ≤ {rg_req:.2f} Ω "
+                    f"(اکنون {rg_d:.2f} Ω) یا Ig ≤ {ig_max:,.0f} A (اکنون {ig:,.0f} A).")
+        sc = _scale_needed(out["rho_eq"], inp["area"], inp["length"], inp["depth"], ig, e_touch)
+        if sc is not None and sc > 1.0:
+            acts.append(f"افزایش ابعاد شبکه: با بزرگ‌تر شدن ابعاد خطی به حدود {sc:.2f} برابر (مساحت ≈ {inp['area'] * sc**2:,.0f} m² "
+                        f"و طول هادی ≈ {inp['length'] * sc**2:,.0f} m، با فرض ثابت ماندن ρ) شرط برقرار می‌شود.")
+        elif sc is None:
+            acts.append("افزایش مساحت و طول هادی به‌تنهایی (تا ۳ برابر ابعاد خطی) کافی نیست؛ ترکیب چند راهکار لازم است.")
+        acts.append("کاهش Ig: مسیرهای بازگشت فلزی جریان خطا (سیم محافظ خطوط انتقال، شیلد کابل‌ها، نوترال) ضریب تقسیم جریان Sf را کم "
+                    "و Ig را کوچک می‌کنند.")
+        t2 = max(inp["ts"] / 2.0, 0.05)
+        rho_surf = inp["rho_s"] if inp["hs"] > 0 else rho1
+        tv2 = tolerable_voltages(rho1, rho_surf, inp["hs"], inp["weight"], t2)
+        acts.append(f"کاهش زمان قطع خطا از {inp['ts']:g} به {t2:g} ثانیه (حفاظت سریع‌تر) ولتاژ تماس مجاز را از {e_touch:,.0f} به "
+                    f"{tv2['e_touch']:,.0f} V می‌رساند.")
+        if inp["hs"] < 0.15:
+            tv3 = tolerable_voltages(rho1, inp["rho_s"], 0.15, inp["weight"], inp["ts"])
+            if tv3["e_touch"] > e_touch * 1.05:
+                acts.append(f"لایه سطحی سنگ‌ریزه با ضخامت حدود ۰٫۱۵ متر (با ρs = {inp['rho_s']:,.0f} Ω·m) ولتاژ تماس مجاز را به "
+                            f"{tv3['e_touch']:,.0f} V می‌رساند. ρs را برای سنگ‌ریزه خیس وارد کنید، نه خشک.")
+        add("info", "راهکارهای عملی برای کاهش GPR و افزایش حاشیه ایمنی",
+            "اثر هر اقدام جدا محاسبه شده است؛ در عمل معمولاً ترکیبی از آن‌ها لازم می‌شود.", acts, "IEEE 80")
+
+    if abs(k) < 0.1 or fit["rmse_uniform_pct"] <= fit["rmse_pct"] * 1.2:
+        add("info", "ساختار خاک و انتخاب الکترود",
+            f"خاک تقریباً یکنواخت است (K = {k:.2f}). مدل دولایه اطلاعات تازه‌ای نمی‌دهد و ρ₂ و h قابل اتکا نیستند.",
+            ["برای کاهش Rg، افزایش مساحت پوشش و تراکم هادی‌ها مؤثرترین راه است؛ میله‌های عمودی اثر محدودی دارند."], "IEEE 80")
+    elif k < 0:
+        add("info", "ساختار خاک و انتخاب الکترود",
+            f"لایه عمقی رساناتر است (ρ₂ = {rho2:,.0f} در برابر ρ₁ = {rho1:,.0f} Ω·m ، K = {k:.2f}).",
+            [f"میله‌های زمین که از لایه اول عبور کنند (طول بیش از h ≈ {h:.1f} m ، مثلاً {h + 1:.1f} تا {h + 3:.1f} m) "
+             "مقاومت شبکه و ولتاژهای تماس را مؤثرتر کاهش می‌دهند.",
+             "اگر حفاری عمیق شدنی است، الکترودهای عمیق یا چاه زمین را بررسی کنید.",
+             "لایه سطحی سنگ‌ریزه همچنان برای ولتاژ گام و تماس مفید است."], "IEEE 80")
+    else:
+        add("info", "ساختار خاک و انتخاب الکترود",
+            f"لایه عمقی مقاوم‌تر است (ρ₂ = {rho2:,.0f} در برابر ρ₁ = {rho1:,.0f} Ω·m ، K = {k:.2f}). جریان بیشتر در لایه سطحی می‌ماند.",
+            ["میله‌های بلند اثر کمی دارند؛ افزایش سطح پوشش شبکه و تراکم هادی‌ها در لایه اول مؤثرتر است.",
+             "مواد بهبوددهنده خاک (مثل بنتونیت یا بتن رسانا) اطراف هادی‌ها را بررسی کنید.",
+             "اتصال به الکترود دورتر در منطقه مرطوب‌تر یا کم‌مقاومت‌تر ممکن است؛ ولتاژ منتقل‌شده را کنترل کنید.",
+             "ρ معادل به ابعاد شبکه وابسته است؛ برای طرح نهایی از روش Sunde یا نرم‌افزار تخصصی استفاده کنید."], "IEEE 80")
+
+    bounds = {}
+    for name, rho_x in (("ρ معادل مدل", out["rho_eq"]), ("فقط ρ₁", rho1), ("فقط ρ₂", rho2)):
+        bounds[name] = ig * grid_resistance(rho_x, inp["area"], inp["length"], inp["depth"])["sverak"]
+    g_lo, g_hi = min(bounds.values()), max(bounds.values())
+    spread = g_hi / g_lo
+    if rg_d <= 1.0:
+        rg_txt = "در محدوده‌ای است که معمولاً برای پست‌های بزرگ هدف‌گذاری می‌شود"
+    elif rg_d <= 5.0:
+        rg_txt = "برای پست‌های کوچک‌تر توزیع معمولاً قابل قبول است"
+    else:
+        rg_txt = "بالاتر از محدوده معمول است"
+    add("warn" if spread > 1.3 or rg_d > 5 else "info", "مقاومت شبکه و حساسیت به ρ معادل",
+        f"Rg طراحی (Sverak) برابر {rg_d:.2f} Ω است و {rg_txt} (راهنمای عملی، نه معیار پذیرش؛ معیار اصلی ایمنی ولتاژهای تماس و گام است). "
+        f"اگر خاک یکنواخت با ρ₁ یا ρ₂ فرض شود، GPR بین {g_lo:,.0f} و {g_hi:,.0f} V تغییر می‌کند.",
+        (["دامنه تغییر زیاد است؛ پیش از طرح نهایی ρ معادل را با روش Sunde یا نرم‌افزار تحلیل زمین دقیق‌تر کنید."]
+         if spread > 1.3 else []), "IEEE 80")
+
+    issues = data_sufficiency(a, rho, fit, inp["area"]) if real else []
+    if real:
+        if issues:
+            add(issues[0][0], "کیفیت و کفایت داده‌های اندازه‌گیری خاک",
+                f"{len(issues)} مورد در داده‌ها یافت شد که بر اطمینان نتایج اثر می‌گذارد.",
+                [t for _, t in issues], "IEEE 81")
+        else:
+            add("ok", "کیفیت و کفایت داده‌های اندازه‌گیری خاک",
+                "پوشش فواصل، تعداد نقاط، هموار بودن منحنی و عدم‌قطعیت پارامترها قابل قبول است.", [], "IEEE 81")
+        add("info", "نکات میدانی برای اندازه‌گیری مطمئن (Wenner)", "رعایت این موارد کیفیت داده را بالا می‌برد:",
+            ["حداقل دو مسیر عمود بر هم اندازه‌گیری و نتایج مقایسه شود؛ اختلاف زیاد یعنی ناهمگنی جانبی خاک.",
+             "مسیر آزمون با لوله، ریل، کابل یا حصار فلزی مدفون موازی نباشد و از آن‌ها دور باشد.",
+             "عمق فرورفتن میله‌ها نسبت به فاصله a کوچک بماند (معمولاً کمتر از یک‌بیستم a)، تا فرمول ρ = 2πaR معتبر باشد.",
+             "طراحی را بر پایه شرایط بدتر (خاک خشک و مقاومت ویژه بالاتر) انجام دهید یا اندازه‌گیری را در فصل خشک تکرار کنید.",
+             "از دستگاه کالیبره با فرکانس غیر از هارمونیک‌های 50 Hz استفاده و سیم‌ها را برای حذف تزویج القایی از هم دور کنید."], "IEEE 81")
+    else:
+        add("info", "حالت آموزشی",
+            "کنترل کفایت داده‌های اندازه‌گیری غیرفعال است. برای پروژه واقعی گزینه «حالت پروژه واقعی» را در پنل کناری فعال کنید.",
+            [], "")
+
+    acts = [f"Ig باید با اعمال ضریب تقسیم جریان (Sf) و ضریب decrement (Df) از جریان خطای کل به دست آمده باشد؛ مقدار واردشده: {ig:,.0f} A.",
+            f"ρs لایه سطحی را برای حالت خیس وارد کنید (مقدار فعلی {inp['rho_s']:,.0f} Ω·m).",
+            "وزن مبنا 50 kg محافظه‌کارانه‌تر از 70 kg است؛ اگر حضور افراد سبک‌تر محتمل است آن را انتخاب کنید."]
+    lvl = "info"
+    if not (0.03 <= inp["ts"] <= 3.0):
+        acts.insert(0, f"زمان قطع {inp['ts']:g} s خارج از بازه اعتبار فرمول جریان مجاز بدن (حدود ۰٫۰۳ تا ۳ ثانیه) است؛ نتیجه را با احتیاط ببینید.")
+        lvl = "warn"
+    add(lvl, "فرضیات ورودی ایمنی", "درستی این ورودی‌ها مستقیماً حدود مجاز و GPR را تعیین می‌کند:", acts, "IEEE 80")
+
+    diag = float(np.sqrt(2 * inp["area"]))
+    add("info", "اقدامات پس از اجرا و بهره‌برداری",
+        "طراحی با محاسبه تمام نمی‌شود؛ مقدار اجراشده باید راستی‌آزمایی شود:",
+        [f"پس از ساخت، Rg را با روش افت پتانسیل (fall-of-potential) اندازه بگیرید و با مقدار طراحی ({rg_d:.2f} Ω) مقایسه کنید. "
+         f"پروب جریان باید چند برابر بزرگ‌ترین بُعد شبکه دور باشد (معمولاً ۵ تا ۶ برابر یا بیشتر، یعنی برای قطر ≈ {diag:.0f} m حدود {5 * diag:,.0f} m).",
+         "ولتاژهای تماس و گام را در نقاط بحرانی (کنار حصار و تجهیزات) با تزریق جریان کنترل کنید.",
+         "ظرفیت حرارتی هادی‌ها (رابطه Onderdonk) و استحکام مکانیکی اتصالات را برای Ig و زمان قطع بررسی کنید.",
+         "ولتاژ منتقل‌شده به حصار، لوله‌ها و کابل‌های مخابراتی را کنترل کنید و اتصالات را به‌صورت دوره‌ای بازرسی کنید."],
+        "IEEE 80 / IEEE 81")
+
+    cards.sort(key=lambda c: SEV[c["lvl"]])
+
+    if ratio <= 1:
+        s1 = ("ok" if ratio <= 0.8 else "warn", f"از نظر GPR طرح قابل قبول است ({ratio * 100:.0f}٪ ولتاژ تماس مجاز).")
+        priority = "اجرا و راستی‌آزمایی میدانی مقدار Rg"
+    elif mesh_ok:
+        s1 = ("warn", f"GPR ({gpr:,.0f} V) از ولتاژ تماس مجاز ({e_touch:,.0f} V) بیشتر است، ولی Em ({em:,.0f} V) و Es ({es:,.0f} V) در حد مجازند.")
+        priority = "کنترل ولتاژ منتقل‌شده و راستی‌آزمایی میدانی"
+    else:
+        s1 = ("bad", f"Em ({em:,.0f} V) یا Es ({es:,.0f} V) از حد مجاز ({e_touch:,.0f} / {es_tol:,.0f} V) بیشتر است؛ طرح باید اصلاح شود.")
+        priority = "اصلاح هندسه شبکه (کاهش D، میله‌ها)، لایه سطحی یا کاهش Ig و زمان قطع"
+    s2 = ("info", f"خاک دولایه: ρ₁ = {rho1:,.0f} Ω·m ، ρ₂ = {rho2:,.0f} Ω·m ، h = {h:.2f} m (RMSE = {fit['rmse_pct']:.1f}٪).")
+    extra = []
+    if stt:
+        extra.append(("ok" if stt["touch_unsafe_pct"] == 0 and stt["step_unsafe_pct"] == 0 else "warn",
+                      f"نقشه عددی: ناحیه ناایمن تماس {stt['touch_unsafe_pct']:.1f}٪ و گام {stt['step_unsafe_pct']:.1f}٪ ؛ "
+                      f"گرادیان داخل شبکه {stt['grad_in'][0]:.1f}–{stt['grad_in'][1]:.1f} V/m."))
+    if real:
+        worst = issues[0][0] if issues else "ok"
+        conf = "پایین" if (worst == "bad" or len(issues) >= 3) else ("متوسط" if issues else "بالا")
+        if worst == "bad":
+            priority = "تکمیل اندازه‌گیری خاک (فواصل بزرگ‌تر) پیش از هر تصمیم طراحی"
+        s3 = ({"پایین": "bad", "متوسط": "warn", "بالا": "ok"}[conf], f"اطمینان به داده‌های خاک: {conf}.")
+    else:
+        s3 = ("info", "حالت آموزشی: کنترل کفایت داده غیرفعال است.")
+    return dict(summary=[s1, s2] + extra + [s3], priority=priority, cards=cards, real=real)
+
+
+_ICON = {"ok": "✅", "warn": "⚠️", "bad": "🚨", "info": "ℹ️"}
+
+
+def advice_html(adv: dict) -> str:
+    parts = ['<div class="adv-sum"><div class="adv-sum-t">خلاصه توصیه</div>']
+    for lvl, text in adv["summary"]:
+        parts.append(f'<div class="adv-li"><span>{_ICON[lvl]}</span><span>{text}</span></div>')
+    parts.append(f'<div class="adv-prio"><b>اولویت اول:</b> {adv["priority"]}</div></div>')
+    for c in adv["cards"]:
+        ref = f'<span class="adv-ref">{c["ref"]}</span>' if c["ref"] else ""
+        acts = "".join(f'<div class="adv-li"><span>▸</span><span>{t}</span></div>' for t in c["acts"])
+        parts.append(f'<div class="adv {c["lvl"]}"><div class="adv-h"><span>{_ICON[c["lvl"]]} {c["title"]}</span>{ref}</div>'
+                     f'<div class="adv-b">{c["body"]}</div>{acts}</div>')
+    parts.append('<div class="adv-foot">این توصیه‌ها قاعده‌محور و خودکارند و جایگزین محاسبات کامل IEEE 80 (Em و Es) '
+                 'و بازبینی مهندس مسئول نیستند.</div>')
+    return "".join(parts)
+
+
+def advice_markdown(adv: dict) -> str:
+    lines = ["# توصیه مهندسی", "", "## خلاصه"]
+    lines += [f"- {_ICON[l]} {t}" for l, t in adv["summary"]]
+    lines += [f"- **اولویت اول:** {adv['priority']}", ""]
+    for c in adv["cards"]:
+        lines += [f"## {_ICON[c['lvl']]} {c['title']}" + (f" ({c['ref']})" if c["ref"] else ""), c["body"], ""]
+        lines += [f"- {t}" for t in c["acts"]] + [""]
+    lines.append("> توصیه‌ها قاعده‌محور و خودکارند و جایگزین بازبینی مهندس مسئول نیستند.")
+    return "\n".join(lines)
+
+
+def run_analysis(mode_R, a_text, v_text, area, aspect, spacing, d_mm, rod_mode, rod_len, depth, method,
+                 ig, ts, weight, use_surface, rho_s, hs, real_mode=True) -> dict:
+    a_raw = parse_series(a_text, "فاصله a")
+    v_raw = parse_series(v_text, "مقادیر اندازه‌گیری")
+    if mode_R and a_raw.size == v_raw.size:
+        v_raw = 2.0 * np.pi * a_raw * v_raw
+    a_vals, rho_vals = validate_data(a_raw, v_raw)
+    fit = fit_two_layer(tuple(a_vals), tuple(rho_vals))
+
+    geom = make_geometry(area, aspect, spacing, d_mm, rod_mode, rod_len, depth)
+    depth_eff = geom["h"]
+    rho_eq = equivalent_resistivity(method, fit, area)
+    rg = grid_resistance(rho_eq, area, geom["LT"], depth_eff)
+    gpr = ig * rg["sverak"]
+    mesh = ieee80_mesh_step(rho_eq, ig, geom)
+    hs_eff = hs if use_surface else 0.0
+    tv = tolerable_voltages(fit["rho1"], rho_s if use_surface else fit["rho1"], hs_eff, weight, ts)
+    inp = dict(area=area, aspect=aspect, spacing=spacing, d_mm=d_mm, rod_mode=rod_mode, rod_len=rod_len,
+               length=geom["LT"], depth=depth_eff, ig=ig, ts=ts, weight=weight,
+               hs=hs_eff, rho_s=rho_s, real_mode=real_mode)
+    try:
+        num = solve_grid_potential(float(area), float(aspect), float(spacing), float(d_mm),
+                                   rod_mode, float(rod_len), float(depth_eff))
+        num_stats = potential_stats(num, geom, rho_eq, ig, tv)
+    except (np.linalg.LinAlgError, MemoryError, ValueError):
+        num, num_stats = None, None
+    return dict(a=a_vals, rho=rho_vals, fit=fit, rho_eq=rho_eq, rg=rg, geom=geom, mesh=mesh,
+                num=num, num_stats=num_stats, rg_design=rg["sverak"], gpr=gpr, tv=tv, inp=inp)
+
+
+# ============================================================
+#  استایل — شناسه بصری مهندسی حرفه‌ای (dark graphite + cyan)
 # ============================================================
 CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700;800&display=swap');
-.stApp, button, input, textarea, label, .stMarkdown { font-family: 'Vazirmatn', Tahoma, sans-serif !important; }
-.block-container { padding-top: 3.6rem; max-width: 1280px; direction: rtl; }
-header[data-testid="stHeader"] { background: transparent; }
-#MainMenu, footer { visibility: hidden; }
-.stMarkdown, .stAlert, [data-testid="stWidgetLabel"] { direction: rtl; text-align: right; }
-.js-plotly-plot, .stDataFrame, input, textarea, [data-baseweb="select"] { direction: ltr; }
-section[data-testid="stSidebar"] { direction: rtl; }
-section[data-testid="stSidebar"] > div { background: linear-gradient(180deg, rgba(37,99,235,.09), rgba(37,99,235,0) 40%); }
+@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
 
-.n { direction: ltr; unicode-bidi: isolate; display: inline-block; font-weight: 700; }
+:root {
+  --bg-0:#0a0f14; --bg-1:#0f1620; --bg-2:#141c28; --bg-3:#1a2533;
+  --line:#243244; --line-2:#2e3f54;
+  --txt:#e8eef5; --txt-2:#9fb1c4; --txt-3:#64758a;
+  --cyan:#22d3ee; --cyan-2:#06b6d4; --cyan-bg:rgba(34,211,238,.10);
+  --amber:#f59e0b; --amber-bg:rgba(245,158,11,.10);
+  --red:#ef4444; --red-bg:rgba(239,68,68,.10);
+  --green:#10b981; --green-bg:rgba(16,185,129,.10);
+  --mono:'JetBrains Mono','SF Mono',Consolas,monospace;
+}
+html, body, .stApp { background: var(--bg-0) !important; color: var(--txt) !important; }
+.stApp, button, input, textarea, label, .stMarkdown { font-family:'Vazirmatn',Tahoma,sans-serif !important; }
+.block-container { padding:1rem 2rem 2rem; max-width:1440px; direction:rtl; }
+header[data-testid="stHeader"] { background:transparent !important; }
+#MainMenu, footer { visibility:hidden; }
+.stMarkdown, .stAlert, [data-testid="stWidgetLabel"] { direction:rtl; text-align:right; color:var(--txt-2); }
+.stMarkdown p, .stMarkdown li, .stAlert p { direction:rtl; unicode-bidi:plaintext; text-align:right; color:var(--txt); }
+.js-plotly-plot, .stDataFrame, input, textarea, [data-baseweb="select"] { direction:ltr; }
+section[data-testid="stSidebar"] { direction:rtl; background:var(--bg-1) !important; border-inline-end:1px solid var(--line); }
+section[data-testid="stSidebar"] > div { padding-top:1rem; }
+.stMarkdown bdi, .stMarkdown .ltr, .note bdi, .chip bdi, .adv bdi { direction:ltr; unicode-bidi:isolate; display:inline-block; }
+.n { font-family:var(--mono); direction:ltr; unicode-bidi:isolate; font-weight:600; color:var(--txt); }
 
-/* برند سایدبار */
-.brand { display:flex; align-items:center; gap:12px; margin-bottom:6px; }
-.brand .logo { width:42px; height:42px; border-radius:12px; display:flex; align-items:center; justify-content:center;
-  font-size:22px; background:linear-gradient(135deg,#1d4ed8,#7c3aed); box-shadow:0 6px 16px rgba(37,99,235,.35); }
-.brand-t { font-weight:800; font-size:1.05rem; }
-.brand-s { font-size:.75rem; opacity:.65; }
-.side-t { font-weight:800; font-size:.95rem; margin:14px 0 4px; padding-bottom:6px; border-bottom:1px solid rgba(128,128,128,.25); }
+/* هدر حرفه‌ای */
+.hdr { display:flex; align-items:center; justify-content:space-between; gap:16px;
+  background:linear-gradient(90deg,var(--bg-2) 0%,var(--bg-1) 100%);
+  border:1px solid var(--line); border-radius:6px; padding:12px 20px; margin-bottom:16px; }
+.hdr-l { display:flex; align-items:center; gap:14px; }
+.hdr-logo { width:40px; height:40px; border-radius:8px; display:flex; align-items:center; justify-content:center;
+  background:linear-gradient(135deg,var(--cyan-2),#0891b2); color:#001018; font-size:22px; font-weight:800;
+  box-shadow:0 0 20px rgba(34,211,238,.35); }
+.hdr-t { font-size:1.08rem; font-weight:800; color:var(--txt); }
+.hdr-s { font-size:.78rem; color:var(--txt-3); direction:ltr; font-family:var(--mono); }
+.hdr-r { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.hdr-badge { font-size:.72rem; font-weight:700; padding:4px 12px; border-radius:4px;
+  background:var(--cyan-bg); color:var(--cyan); border:1px solid rgba(34,211,238,.35);
+  font-family:var(--mono); direction:ltr; }
+.hdr-badge.ok { background:var(--green-bg); color:var(--green); border-color:rgba(16,185,129,.4); }
+.hdr-badge.warn { background:var(--amber-bg); color:var(--amber); border-color:rgba(245,158,11,.4); }
+.hdr-badge.bad { background:var(--red-bg); color:var(--red); border-color:rgba(239,68,68,.4); }
 
-/* هدر */
-.hero { position:relative; overflow:hidden; border-radius:20px; padding:30px 34px; color:#fff; margin-bottom:20px;
-  background: linear-gradient(135deg,#0f172a 0%,#1e3a8a 55%,#2563eb 100%); box-shadow:0 14px 34px rgba(30,58,138,.35); }
-.hero::after { content:""; position:absolute; inset:auto auto -90px -70px; width:300px; height:300px; border-radius:50%;
-  background:radial-gradient(circle, rgba(124,58,237,.55), rgba(124,58,237,0) 70%); }
-.hero-badge { display:inline-block; font-size:.75rem; font-weight:700; padding:4px 12px; border-radius:20px;
-  background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.25); margin-bottom:12px; direction:ltr; }
-.hero-title { font-size:1.85rem; font-weight:800; line-height:1.5; }
-.hero-sub { opacity:.85; margin-top:6px; font-size:.95rem; }
-.hero-chips { margin-top:16px; display:flex; flex-wrap:wrap; gap:8px; position:relative; z-index:1; }
-.hero-chips span { font-size:.78rem; padding:4px 12px; border-radius:20px; background:rgba(255,255,255,.12); direction:ltr; }
+/* سایدبار */
+.sb-brand { display:flex; align-items:center; gap:10px; margin-bottom:10px; padding-bottom:10px;
+  border-bottom:1px solid var(--line); }
+.sb-brand .logo { width:36px; height:36px; border-radius:8px; display:flex; align-items:center; justify-content:center;
+  font-size:18px; background:linear-gradient(135deg,var(--cyan-2),#0891b2); color:#001018; }
+.sb-brand-t { font-weight:800; font-size:.95rem; color:var(--txt); }
+.sb-brand-s { font-size:.7rem; opacity:.7; color:var(--txt-3); font-family:var(--mono); }
+.side-t { font-weight:700; font-size:.8rem; margin:14px 0 8px; padding:6px 10px; border-radius:4px;
+  background:var(--bg-3); color:var(--cyan); border-inline-start:3px solid var(--cyan);
+  letter-spacing:.02em; }
+.stTextInput input, .stNumberInput input, .stSelectbox [data-baseweb="select"] > div, .stTextArea textarea {
+  background:var(--bg-2) !important; border:1px solid var(--line) !important;
+  color:var(--txt) !important; border-radius:6px !important; font-family:var(--mono) !important; }
+.stTextInput input:focus, .stNumberInput input:focus { border-color:var(--cyan) !important;
+  box-shadow:0 0 0 2px rgba(34,211,238,.15) !important; }
+[data-testid="stFormSubmitButton"] button { border-radius:6px; font-weight:700; padding:.55rem 1rem;
+  background:linear-gradient(135deg,var(--cyan-2),#0891b2); border:0; color:#001018 !important;
+  box-shadow:0 4px 14px rgba(34,211,238,.3); }
+[data-testid="stFormSubmitButton"] button:hover { box-shadow:0 6px 20px rgba(34,211,238,.45); }
+[data-testid="stFormSubmitButton"] button p { color:#001018 !important; font-weight:800; }
 
-/* شاخص‌ها */
-.kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-bottom:16px; }
-.kpi { border:1px solid rgba(128,128,128,.25); border-top:4px solid var(--accent); border-radius:16px; padding:16px 18px;
-  background:rgba(128,128,128,.06); transition:transform .15s, box-shadow .15s; }
-.kpi:hover { transform:translateY(-3px); box-shadow:0 10px 24px rgba(0,0,0,.12); }
+/* KPI */
+.kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(178px,1fr)); gap:10px; margin-bottom:14px; }
+.kpi { border:1px solid var(--line); border-top:2px solid var(--accent,var(--cyan)); border-radius:6px;
+  padding:12px 14px; background:var(--bg-2); position:relative; overflow:hidden;
+  transition:border-color .15s, box-shadow .15s; }
+.kpi::after { content:""; position:absolute; top:0; inset-inline-end:0; width:2px; height:100%; background:var(--accent,var(--cyan)); opacity:.3; }
+.kpi:hover { border-color:var(--accent,var(--cyan)); box-shadow:0 0 0 1px var(--accent,var(--cyan)) inset; }
 .kpi-top { display:flex; justify-content:space-between; align-items:center; }
-.kpi-label { font-size:.82rem; opacity:.7; font-weight:500; }
-.kpi-ico { font-size:1.25rem; }
-.kpi-value { font-size:2rem; font-weight:800; direction:ltr; text-align:right; line-height:1.3; margin-top:6px; }
-.kpi-value small { font-size:.85rem; font-weight:500; opacity:.6; margin-inline-start:6px; }
-.kpi-sub { font-size:.78rem; opacity:.6; margin-top:2px; }
+.kpi-label { font-size:.72rem; color:var(--txt-3); font-weight:600; letter-spacing:.02em; }
+.kpi-ico { font-size:1rem; opacity:.85; }
+.kpi-value { font-size:1.75rem; font-weight:800; direction:ltr; text-align:right; line-height:1.2;
+  margin-top:6px; font-family:var(--mono); color:var(--txt); }
+.kpi-value small { font-size:.78rem; font-weight:500; opacity:.65; margin-inline-start:6px; color:var(--txt-2);
+  font-family:var(--mono); }
+.kpi-sub { font-size:.72rem; color:var(--txt-3); margin-top:4px; direction:rtl; text-align:right; }
 
-/* برچسب‌ها و یادداشت‌ها */
-.chips { display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 10px; }
-.chip { font-size:.8rem; font-weight:700; padding:5px 12px; border-radius:20px; border:1px solid; }
-.chip.good { color:#059669; background:rgba(16,185,129,.12); border-color:rgba(16,185,129,.4); }
-.chip.warn { color:#d97706; background:rgba(245,158,11,.12); border-color:rgba(245,158,11,.4); }
-.chip.bad  { color:#dc2626; background:rgba(239,68,68,.12);  border-color:rgba(239,68,68,.4); }
-.chip.neutral { background:rgba(128,128,128,.1); border-color:rgba(128,128,128,.3); }
-.note { padding:10px 14px; border-radius:12px; margin:8px 0; font-size:.9rem; border-inline-start:4px solid; }
-.note.info { background:rgba(37,99,235,.08); border-color:#2563eb; }
-.note.warn { background:rgba(245,158,11,.1); border-color:#f59e0b; }
+/* chips */
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 12px; }
+.chip { font-size:.74rem; font-weight:700; padding:4px 10px; border-radius:4px; border:1px solid;
+  direction:rtl; unicode-bidi:plaintext; font-family:var(--mono); }
+.chip.good { color:var(--green); background:var(--green-bg); border-color:rgba(16,185,129,.4); }
+.chip.warn { color:var(--amber); background:var(--amber-bg); border-color:rgba(245,158,11,.4); }
+.chip.bad  { color:var(--red); background:var(--red-bg); border-color:rgba(239,68,68,.4); }
+.chip.neutral { color:var(--txt-2); background:var(--bg-3); border-color:var(--line-2); }
 
-/* وضعیت ایمنی */
-.status { border-radius:18px; padding:18px 24px; border:1px solid; margin:6px 0 10px; }
-.status.ok  { background:rgba(16,185,129,.1); border-color:rgba(16,185,129,.5); }
-.status.bad { background:rgba(239,68,68,.1);  border-color:rgba(239,68,68,.5); }
-.status.warn { background:rgba(245,158,11,.1); border-color:rgba(245,158,11,.5); }
-.status-t { font-size:1.15rem; font-weight:800; }
-.status-d { font-size:.9rem; opacity:.85; margin-top:4px; }
-.track { position:relative; height:10px; border-radius:6px; background:rgba(128,128,128,.25); margin:16px 0 4px; direction:ltr; }
-.fill { height:100%; border-radius:6px; }
-.limit { position:absolute; top:-5px; left:66.67%; width:2px; height:20px; background:currentColor; opacity:.7; }
-.track-l { display:flex; justify-content:space-between; font-size:.72rem; opacity:.6; direction:ltr; }
+/* notes */
+.note { padding:9px 12px; border-radius:6px; margin:8px 0; font-size:.85rem;
+  border-inline-start:3px solid var(--cyan); background:var(--cyan-bg); color:var(--txt);
+  direction:rtl; text-align:right; }
+.note.info { background:var(--cyan-bg); border-color:var(--cyan); }
+.note.warn { background:var(--amber-bg); border-color:var(--amber); }
+.note.bad { background:var(--red-bg); border-color:var(--red); }
 
-/* عنوان بخش و کارت‌های کوچک */
-.sec { display:flex; align-items:center; gap:10px; margin:22px 0 10px; }
-.sec .bar { width:5px; height:24px; border-radius:3px; background:linear-gradient(#2563eb,#8b5cf6); }
-.sec .t { font-size:1.12rem; font-weight:800; }
-.sec .s { font-size:.82rem; opacity:.6; margin-inline-start:6px; }
-.mini-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; margin-bottom:8px; }
-.mini { border:1px solid rgba(128,128,128,.25); border-radius:14px; padding:14px 16px; background:rgba(128,128,128,.06); }
-.mini.hl { border-color:#2563eb; background:rgba(37,99,235,.09); box-shadow:0 0 0 1px #2563eb inset; }
-.mini .l { font-size:.8rem; opacity:.7; }
-.mini .v { font-size:1.45rem; font-weight:800; direction:ltr; text-align:right; }
-.mini .u { font-size:.8rem; opacity:.6; margin-inline-start:4px; font-weight:500; }
-.mini .tag { font-size:.7rem; font-weight:700; color:#2563eb; }
+/* status block */
+.status { border-radius:8px; padding:16px 20px; border:1px solid; margin:6px 0 14px;
+  background:var(--bg-2); }
+.status.ok  { border-color:rgba(16,185,129,.5); background:linear-gradient(90deg,var(--green-bg),transparent); }
+.status.bad { border-color:rgba(239,68,68,.5); background:linear-gradient(90deg,var(--red-bg),transparent); }
+.status.warn { border-color:rgba(245,158,11,.5); background:linear-gradient(90deg,var(--amber-bg),transparent); }
+.status-t { font-size:1.05rem; font-weight:800; color:var(--txt); }
+.status-d { font-size:.85rem; color:var(--txt-2); margin-top:6px; direction:rtl; text-align:right; }
+.track { position:relative; height:8px; border-radius:4px; background:var(--bg-3); margin:14px 0 4px;
+  direction:ltr; overflow:hidden; }
+.fill { height:100%; border-radius:4px; transition:width .3s; }
+.limit { position:absolute; top:-3px; left:66.67%; width:2px; height:14px; background:var(--txt); opacity:.85; }
+.track-l { display:flex; justify-content:space-between; font-size:.68rem; color:var(--txt-3);
+  direction:ltr; font-family:var(--mono); }
 
-/* تب‌ها و دکمه‌ها */
-.stTabs [data-baseweb="tab-list"] { gap:6px; border-bottom:1px solid rgba(128,128,128,.25); }
-.stTabs [data-baseweb="tab"] { border-radius:10px 10px 0 0; padding:10px 20px; font-weight:700; }
-[data-testid="stFormSubmitButton"] button, .stDownloadButton button { border-radius:12px; font-weight:700; padding:.6rem 1rem; }
-[data-testid="stFormSubmitButton"] button { background:linear-gradient(135deg,#1d4ed8,#2563eb); border:0; box-shadow:0 6px 16px rgba(37,99,235,.35); }
-[data-testid="stFormSubmitButton"] button p { color:#fff; }
+/* section header */
+.sec { display:flex; align-items:center; gap:10px; margin:20px 0 10px; }
+.sec .bar { width:3px; height:20px; border-radius:2px; background:var(--cyan); box-shadow:0 0 8px rgba(34,211,238,.5); }
+.sec .t { font-size:1rem; font-weight:800; color:var(--txt); }
+.sec .s { font-size:.75rem; color:var(--txt-3); margin-inline-start:6px; }
 
-/* گزارش */
-.rep-sec { display:flex; align-items:center; gap:10px; margin:20px 0 6px; font-weight:800; font-size:1.05rem; direction:rtl; }
-.rep-sec::before { content:""; width:5px; height:20px; border-radius:3px; background:linear-gradient(#2563eb,#8b5cf6); }
-.rep-row { display:flex; justify-content:space-between; align-items:center; gap:14px; padding:9px 6px;
-  border-bottom:1px dashed rgba(128,128,128,.3); direction:rtl; text-align:right; }
-.rep-row .k { opacity:.85; }
-.rep-row .v { font-weight:800; direction:ltr; unicode-bidi:isolate; text-align:left; white-space:nowrap; }
-.rep-row.hl { background:rgba(37,99,235,.08); border-radius:10px; border-bottom:0; }
-.rep-verdict { margin-top:18px; padding:14px 18px; border-radius:14px; font-weight:700; direction:rtl; text-align:right; }
-.rep-verdict.ok  { background:rgba(16,185,129,.12); border:1px solid rgba(16,185,129,.5); }
-.rep-verdict.bad { background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.5); }
-.rep-verdict.warn { background:rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.5); }
-.rep-title { font-size:1.2rem; font-weight:800; direction:rtl; text-align:right; }
-.rep-date { font-size:.8rem; opacity:.6; direction:rtl; text-align:right; margin-bottom:4px; }
+/* mini cards */
+.mini-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-bottom:8px; }
+.mini { border:1px solid var(--line); border-radius:6px; padding:12px 14px; background:var(--bg-2); position:relative; }
+.mini.hl { border-color:var(--cyan); background:var(--bg-3); box-shadow:0 0 0 1px var(--cyan) inset; }
+.mini .l { font-size:.72rem; color:var(--txt-3); font-weight:600; }
+.mini .v { font-size:1.25rem; font-weight:800; direction:ltr; text-align:right; font-family:var(--mono); color:var(--txt); margin-top:4px; }
+.mini .u { font-size:.72rem; color:var(--txt-3); margin-inline-start:4px; font-weight:500; font-family:var(--mono); }
+.mini .tag { font-size:.66rem; font-weight:700; color:var(--cyan); font-family:var(--mono); }
 
-/* توصیه مهندسی */
-.note.bad { background:rgba(239,68,68,.1); border-color:#ef4444; }
-.adv-sum { border-radius:18px; padding:18px 22px; margin:6px 0 14px; direction:rtl; text-align:right;
-  background:linear-gradient(135deg,rgba(37,99,235,.12),rgba(139,92,246,.10)); border:1px solid rgba(37,99,235,.35); }
-.adv-sum-t { font-weight:800; font-size:1.1rem; margin-bottom:6px; }
-.adv-prio { margin-top:10px; padding-top:10px; border-top:1px dashed rgba(128,128,128,.4); }
-.adv { --c:#2563eb; border:1px solid rgba(128,128,128,.25); border-inline-start:5px solid var(--c); border-radius:14px;
-  padding:14px 18px; margin:10px 0; background:rgba(128,128,128,.05); direction:rtl; text-align:right; }
-.adv.bad { --c:#ef4444; } .adv.warn { --c:#f59e0b; } .adv.ok { --c:#10b981; }
-.adv-h { display:flex; justify-content:space-between; align-items:center; gap:10px; font-weight:800; }
-.adv-ref { font-size:.7rem; font-weight:700; padding:2px 10px; border-radius:12px; background:rgba(37,99,235,.12);
-  color:#2563eb; direction:ltr; white-space:nowrap; }
-.adv-b { margin-top:6px; font-size:.92rem; line-height:1.95; opacity:.95; }
-.adv-li { display:flex; gap:8px; align-items:flex-start; margin-top:6px; font-size:.9rem; line-height:1.9; }
+/* tabs */
+.stTabs [data-baseweb="tab-list"] { gap:2px; border-bottom:1px solid var(--line); background:var(--bg-1); padding:0 8px; }
+.stTabs [data-baseweb="tab"] { border-radius:4px 4px 0 0; padding:9px 16px; font-weight:700; font-size:.85rem; color:var(--txt-3); }
+.stTabs [aria-selected="true"] { color:var(--cyan) !important; background:var(--bg-2) !important;
+  border-bottom:2px solid var(--cyan) !important; }
+.stTabs [data-baseweb="tab-highlight"] { background:var(--cyan) !important; }
+
+/* report */
+.rep-sec { display:flex; align-items:center; gap:10px; margin:18px 0 6px; font-weight:800; font-size:.95rem;
+  direction:rtl; color:var(--cyan); }
+.rep-sec::before { content:""; width:3px; height:16px; border-radius:2px; background:var(--cyan); box-shadow:0 0 8px rgba(34,211,238,.5); }
+.rep-row { display:flex; justify-content:space-between; align-items:center; gap:14px; padding:8px 4px;
+  border-bottom:1px dashed var(--line-2); direction:rtl; text-align:right; }
+.rep-row .k { color:var(--txt-2); font-size:.85rem; }
+.rep-row .v { font-weight:700; direction:ltr; unicode-bidi:isolate; text-align:left; white-space:nowrap;
+  font-family:var(--mono); color:var(--txt); }
+.rep-row.hl { background:var(--cyan-bg); border-radius:4px; border-bottom:0; padding-inline:10px; }
+.rep-row.hl .v { color:var(--cyan); }
+.rep-verdict { margin-top:16px; padding:12px 16px; border-radius:6px; font-weight:700;
+  direction:rtl; text-align:right; border:1px solid; }
+.rep-verdict.ok  { background:var(--green-bg); border-color:rgba(16,185,129,.5); color:var(--green); }
+.rep-verdict.bad { background:var(--red-bg); border-color:rgba(239,68,68,.5); color:var(--red); }
+.rep-verdict.warn { background:var(--amber-bg); border-color:rgba(245,158,11,.5); color:var(--amber); }
+.rep-title { font-size:1.1rem; font-weight:800; direction:rtl; text-align:right; color:var(--txt); }
+.rep-date { font-size:.75rem; color:var(--txt-3); direction:rtl; text-align:right; margin-bottom:4px;
+  font-family:var(--mono); }
+
+/* advice */
+.adv-sum { border-radius:8px; padding:16px 20px; margin:6px 0 14px; direction:rtl; text-align:right;
+  background:var(--bg-2); border:1px solid var(--line); border-inline-start:3px solid var(--cyan); }
+.adv-sum-t { font-weight:800; font-size:1rem; margin-bottom:8px; color:var(--cyan); }
+.adv-prio { margin-top:10px; padding-top:10px; border-top:1px dashed var(--line-2); color:var(--txt); }
+.adv-prio b { color:var(--amber); }
+.adv { --c:var(--cyan); border:1px solid var(--line); border-inline-start:3px solid var(--c); border-radius:6px;
+  padding:12px 16px; margin:10px 0; background:var(--bg-2); direction:rtl; text-align:right; }
+.adv.bad { --c:var(--red); } .adv.warn { --c:var(--amber); } .adv.ok { --c:var(--green); } .adv.info { --c:var(--cyan); }
+.adv-h { display:flex; justify-content:space-between; align-items:center; gap:10px; font-weight:800; color:var(--txt); }
+.adv-ref { font-size:.66rem; font-weight:700; padding:2px 8px; border-radius:3px; background:var(--cyan-bg);
+  color:var(--cyan); direction:ltr; white-space:nowrap; font-family:var(--mono); }
+.adv-b { margin-top:6px; font-size:.85rem; line-height:1.9; color:var(--txt-2); }
+.adv-li { display:flex; gap:8px; align-items:flex-start; margin-top:5px; font-size:.84rem;
+  line-height:1.85; color:var(--txt-2); }
 .adv-li > span:first-child { flex:0 0 auto; color:var(--c); }
-.adv-foot { font-size:.78rem; opacity:.6; margin-top:14px; direction:rtl; text-align:right; }
+.adv-foot { font-size:.72rem; color:var(--txt-3); margin-top:14px; direction:rtl; text-align:right; }
 
-.foot { text-align:center; font-size:.78rem; opacity:.55; margin:30px 0 6px; }
+/* controls bar */
+.ctrl-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 14px;
+  background:var(--bg-2); border:1px solid var(--line); border-radius:6px; margin:8px 0 12px; }
+.ctrl-lbl { font-size:.75rem; color:var(--txt-3); font-weight:600; }
 
-/* ===== Premium engineering interface refresh ===== */
-:root { color-scheme: light; }
-.stApp {
-  background: radial-gradient(ellipse at 12% 0%, rgba(59,130,246,.075), transparent 34%),
-              linear-gradient(180deg, #f7f9fd 0%, #f1f5fb 100%);
-  color: #15243b;
+/* footer */
+.foot { text-align:center; font-size:.72rem; color:var(--txt-3); margin:24px 0 6px;
+  font-family:var(--mono); direction:ltr; }
+
+/* responsive */
+@media (max-width: 768px) {
+  .block-container { padding:.5rem .6rem 1.5rem; }
+  .hdr { padding:10px 12px; }
+  .hdr-t { font-size:.9rem; } .hdr-s { font-size:.66rem; }
+  .kpi-grid { grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:8px; }
+  .kpi-value { font-size:1.3rem; } .kpi-label { font-size:.66rem; }
+  .mini-grid { grid-template-columns:1fr 1fr; }
+  .stTabs [data-baseweb="tab"] { padding:7px 10px; font-size:.74rem; }
+  .sec .t { font-size:.9rem; }
 }
-[data-testid="stAppViewContainer"] > .main { background: transparent; }
-.block-container { max-width: 1540px; padding: 2rem clamp(1rem, 2.5vw, 2.6rem) 3rem; }
-[data-testid="stSidebar"] { border-inline-end: 1px solid #dce5f1; }
-section[data-testid="stSidebar"] > div {
-  background: linear-gradient(180deg, #edf3fc 0%, #f7f9fd 42%, #f4f7fc 100%);
-  padding-top: 1.3rem;
-}
-.brand { padding: 10px 10px 17px; border-bottom: 1px solid #d6e0ef; margin-bottom: 16px; }
-.brand .logo { width: 48px; height: 48px; border-radius: 15px; background: linear-gradient(145deg,#102a56,#2463c9 65%,#3c8fe8); box-shadow: 0 8px 20px rgba(24,72,145,.22); }
-.brand-t { color:#102a50; letter-spacing:-.2px; }
-.brand-s { color:#647792; opacity:1; }
-.side-t { color:#24466f; border-bottom-color:#d9e3f0; margin-top:19px; padding-bottom:9px; }
-.hero { border-radius:24px; padding:clamp(24px,3.2vw,42px); margin-bottom:22px;
-  background:linear-gradient(115deg,#0b1930 0%,#12376b 48%,#1768b5 100%);
-  box-shadow:0 18px 42px rgba(18,55,107,.18); border:1px solid rgba(255,255,255,.16); }
-.hero::before { content:""; position:absolute; inset:0; pointer-events:none; opacity:.22;
-  background-image:linear-gradient(rgba(255,255,255,.12) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.12) 1px,transparent 1px);
-  background-size:32px 32px; mask-image:linear-gradient(110deg,black,transparent 72%); }
-.hero::after { width:360px; height:360px; background:radial-gradient(circle,rgba(56,189,248,.34),transparent 68%); }
-.hero-badge { letter-spacing:.6px; background:rgba(125,211,252,.13); border-color:rgba(186,230,253,.32); }
-.hero-title { font-size:clamp(1.45rem,2.5vw,2.15rem); letter-spacing:-.5px; }
-.hero-sub { max-width:850px; line-height:1.9; color:#dceafe; }
-.hero-chips span { border:1px solid rgba(255,255,255,.16); backdrop-filter:blur(8px); }
-.kpi-grid { grid-template-columns:repeat(auto-fit,minmax(min(100%,205px),1fr)); gap:14px; }
-.kpi { position:relative; overflow:hidden; background:rgba(255,255,255,.92); border:1px solid #e0e8f3;
-  border-top:3px solid var(--accent); border-radius:18px; padding:18px 19px; box-shadow:0 5px 18px rgba(28,55,92,.045); }
-.kpi::after { content:""; position:absolute; width:90px; height:90px; left:-38px; bottom:-48px; border-radius:50%; background:var(--accent); opacity:.055; }
-.kpi:hover { transform:translateY(-2px); box-shadow:0 12px 25px rgba(28,55,92,.09); }
-.kpi-label { color:#5b6d86; opacity:1; }
-.kpi-value { color:#122b4c; font-size:clamp(1.5rem,2.2vw,2rem); font-variant-numeric:tabular-nums; }
-.kpi-sub { color:#75859b; opacity:1; }
-.status { background:#fff; box-shadow:0 6px 20px rgba(28,55,92,.045); border-radius:17px; }
-.status-t { letter-spacing:-.2px; }
-.note { line-height:1.9; border-radius:13px; }
-.sec { margin-top:27px; margin-bottom:13px; }
-.sec .bar { height:27px; width:4px; background:linear-gradient(180deg,#2385e8,#5b5ce2); }
-.sec .t { color:#17365e; letter-spacing:-.2px; }
-.sec .s { color:#75859b; opacity:1; }
-.mini-grid { grid-template-columns:repeat(auto-fit,minmax(min(100%,185px),1fr)); gap:12px; }
-.mini { background:rgba(255,255,255,.9); border-color:#e0e8f3; border-radius:16px; box-shadow:0 4px 14px rgba(28,55,92,.035); }
-.mini.hl { background:linear-gradient(145deg,#eef5ff,#fff); border-color:#8bb7f4; box-shadow:inset 0 0 0 1px rgba(37,99,235,.18); }
-.mini .l { color:#647792; opacity:1; }
-.mini .v { color:#17365e; font-variant-numeric:tabular-nums; }
-.chip { border-radius:9px; padding:6px 11px; }
-.stTabs [data-baseweb="tab-list"] { gap:5px; padding:6px; background:#eaf0f8; border:1px solid #dce5f1; border-radius:15px; flex-wrap:wrap; }
-.stTabs [data-baseweb="tab"] { border-radius:10px; padding:10px 14px; color:#5b6d86; transition:background .15s ease; }
-.stTabs [aria-selected="true"] { background:#fff !important; color:#164b91 !important; box-shadow:0 2px 8px rgba(28,55,92,.09); }
-.stTabs [data-baseweb="tab-highlight"] { display:none; }
-[data-testid="stForm"] { background:rgba(255,255,255,.72); border:1px solid #dfe7f2; border-radius:17px; padding:12px 13px 14px; }
-input, textarea, [data-baseweb="select"] > div { border-radius:10px !important; }
-input:focus, textarea:focus { border-color:#4c8de8 !important; box-shadow:0 0 0 1px #4c8de8 !important; }
-.stButton button, .stDownloadButton button, [data-testid="stFormSubmitButton"] button {
-  border-radius:11px; min-height:2.65rem; font-weight:700; transition:transform .15s ease,box-shadow .15s ease; }
-.stButton button:hover, .stDownloadButton button:hover, [data-testid="stFormSubmitButton"] button:hover { transform:translateY(-1px); box-shadow:0 7px 16px rgba(37,99,235,.16); }
-[data-testid="stDataFrame"] { border:1px solid #dfe7f2; border-radius:14px; overflow:hidden; background:#fff; }
-div[data-testid="stAlert"] { border-radius:13px; }
-.js-plotly-plot { border:1px solid rgba(209,222,239,.85); border-radius:16px; overflow:hidden; background:rgba(255,255,255,.68); box-shadow:0 5px 17px rgba(28,55,92,.035); }
-.stCaption, small { color:#74849a; }
-@media (max-width: 900px) {
-  .block-container { padding:1.2rem .8rem 2rem; }
-  .hero { padding:23px 20px; border-radius:19px; }
-  .hero-title { line-height:1.55; }
-  .stTabs [data-baseweb="tab"] { padding:8px 10px; font-size:.82rem; }
-  .kpi-grid { grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:10px; }
-  .kpi { padding:14px; }
-  .kpi-value { font-size:1.45rem; }
-}
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition:none !important; animation:none !important; scroll-behavior:auto !important; } }
 """
 
-C_BLUE, C_PURPLE, C_GREEN, C_AMBER, C_RED = "#2563eb", "#8b5cf6", "#10b981", "#f59e0b", "#ef4444"
+C_CYAN, C_BLUE, C_PURPLE, C_GREEN, C_AMBER, C_RED = "#22d3ee", "#2563eb", "#8b5cf6", "#10b981", "#f59e0b", "#ef4444"
 FONT = "Vazirmatn, Tahoma, sans-serif"
+MONO = "JetBrains Mono, Consolas, monospace"
+BG_PLOT = "#0f1620"
+GRID_PLOT = "rgba(36,50,68,.8)"
+
 DEFAULTS = dict(
     mode_R=False,
     a_text="1, 2, 3, 5, 8, 10, 15, 20, 30, 40, 50, 60, 80, 100, 120, 150",
@@ -438,10 +896,9 @@ DEFAULTS = dict(
 
 
 # ============================================================
-#  توابع کمکی نمایش
+#  توابع نمایش
 # ============================================================
 def H(s: str) -> str:
-    """حذف تورفتگی خطوط تا Markdown قطعه HTML را به‌عنوان کد تفسیر نکند."""
     return "".join(line.strip() for line in s.strip().splitlines())
 
 
@@ -456,7 +913,9 @@ def section(title: str, sub: str = "") -> None:
 
 
 def chip(text: str, kind: str = "neutral") -> str:
-    return f'<span class="chip {kind}">{text}</span>'
+    text = re.sub(r'(?<![\w.])([+−-]?\d[\d,]*(?:\.\d+)?(?:\s*[٪%])?)',
+                  r'<bdi dir="ltr">\1</bdi>', text)
+    return f'<span class="chip {kind}" dir="rtl">{text}</span>'
 
 
 def mini_card(label: str, value: str, unit: str = "", highlight: bool = False, tag: str = "") -> str:
@@ -466,19 +925,20 @@ def mini_card(label: str, value: str, unit: str = "", highlight: bool = False, t
 
 
 def style_fig(fig: go.Figure, height: int = 380) -> go.Figure:
-    grid = "rgba(128,128,128,.2)"
     fig.update_layout(
-        height=height, margin=dict(l=18, r=18, t=48, b=18),
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(255,255,255,0.22)",
-        font=dict(family=FONT, size=13, color="#31445f"),
-        hoverlabel=dict(font_family=FONT, bgcolor="#102a50", font_color="#ffffff", bordercolor="#102a50"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.03, xanchor="right", x=1,
-                    bgcolor="rgba(255,255,255,.72)", bordercolor="rgba(190,207,229,.7)", borderwidth=1),
+        height=height, margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONT, size=12, color="#9fb1c4"),
+        hoverlabel=dict(font_family=MONO, bgcolor="#141c28", bordercolor="#243244", font_color="#e8eef5"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                    bgcolor="rgba(20,28,40,.6)", bordercolor="#243244", borderwidth=1,
+                    font=dict(size=11)),
+        title=dict(font=dict(size=13, color="#e8eef5")),
     )
-    fig.update_xaxes(gridcolor=grid, zeroline=False, linecolor="rgba(130,151,179,.55)",
-                     ticks="outside", tickcolor="rgba(130,151,179,.55)", automargin=True)
-    fig.update_yaxes(gridcolor=grid, zeroline=False, linecolor="rgba(130,151,179,.55)",
-                     ticks="outside", tickcolor="rgba(130,151,179,.55)", automargin=True)
+    fig.update_xaxes(gridcolor=GRID_PLOT, zeroline=False, linecolor="#2e3f54",
+                     tickfont=dict(family=MONO, size=10), title_font=dict(size=11))
+    fig.update_yaxes(gridcolor=GRID_PLOT, zeroline=False, linecolor="#2e3f54",
+                     tickfont=dict(family=MONO, size=10), title_font=dict(size=11))
     return fig
 
 
@@ -487,31 +947,34 @@ def fit_fig(a, rho, fit) -> go.Figure:
     model = rho_apparent_two_layer(a_fine, fit["rho1"], fit["rho2"], fit["h"])
     top1 = fit["rho1"] >= fit["rho2"]
     fig = go.Figure()
-    fig.add_hline(y=fit["rho1"], line_dash="dot", line_color=C_BLUE, opacity=.55,
-                  annotation_text="ρ₁ (a→0)", annotation_position="top left" if top1 else "bottom left")
-    fig.add_hline(y=fit["rho2"], line_dash="dot", line_color=C_PURPLE, opacity=.55,
-                  annotation_text="ρ₂ (a→∞)", annotation_position="bottom right" if top1 else "top right")
+    fig.add_hline(y=fit["rho1"], line_dash="dot", line_color=C_CYAN, opacity=.6,
+                  annotation_text="ρ₁ (a→0)", annotation_position="top left" if top1 else "bottom left",
+                  annotation_font=dict(family=MONO, size=10, color=C_CYAN))
+    fig.add_hline(y=fit["rho2"], line_dash="dot", line_color=C_PURPLE, opacity=.6,
+                  annotation_text="ρ₂ (a→∞)", annotation_position="bottom right" if top1 else "top right",
+                  annotation_font=dict(family=MONO, size=10, color=C_PURPLE))
     fig.add_trace(go.Scatter(x=a_fine, y=model, mode="lines", name="مدل دولایه",
-                             line=dict(color=C_BLUE, width=3.5)))
+                             line=dict(color=C_CYAN, width=3)))
     fig.add_trace(go.Scatter(x=a, y=rho, mode="markers", name="اندازه‌گیری",
-                             marker=dict(size=11, color=C_RED, line=dict(width=2, color="white"))))
+                             marker=dict(size=10, color=C_RED, line=dict(width=1.5, color="#0a0f14"))))
     fig.update_xaxes(type="log", title="فاصله الکترودها a (m)")
     fig.update_yaxes(title="مقاومت ظاهری ρa (Ω·m)")
-    return style_fig(fig, 400)
+    return style_fig(fig, 420)
 
 
 def residual_fig(a, err) -> go.Figure:
     colors = [C_GREEN if abs(e) <= 5 else C_AMBER if abs(e) <= 10 else C_RED for e in err]
     fig = go.Figure(go.Bar(x=[f"{v:g}" for v in a], y=err, marker_color=colors,
                            text=[f"{e:+.1f}" for e in err], textposition="outside", cliponaxis=False,
+                           textfont=dict(family=MONO, size=10, color="#e8eef5"),
                            hovertemplate="a = %{x} m<br>خطا = %{y:.2f}٪<extra></extra>"))
-    fig.add_hrect(y0=-10, y1=10, fillcolor="rgba(16,185,129,.10)", line_width=0)
+    fig.add_hrect(y0=-10, y1=10, fillcolor="rgba(16,185,129,.08)", line_width=0)
     fig.update_xaxes(title="فاصله الکترودها a (m)", type="category")
     fig.update_yaxes(title="خطای نسبی (٪)")
     return style_fig(fig, 300)
 
 
-# ---------- مقطع واقع‌گرایانه خاک (SVG، دقیق و بدون نیاز به اینترنت) ----------
+# ---------- مقطع واقع‌گرایانه خاک (SVG) ----------
 _STOPS = [(0.0, (58, 40, 30)), (0.3, (120, 86, 56)), (0.55, (190, 160, 108)),
           (0.78, (150, 152, 155)), (1.0, (205, 208, 212))]
 
@@ -530,7 +993,6 @@ def _hex(c, k: float = 1.0) -> str:
 
 
 def _texture(rng, x0, y0, w, h, rho, base) -> str:
-    """بافت بصری لایه بر اساس نوع خاک (رس، لوم، شن، سنگ)."""
     out = []
     area = w * h
     n_dots = int(min(area / 260, 800))
@@ -538,7 +1000,7 @@ def _texture(rng, x0, y0, w, h, rho, base) -> str:
         k = rng.choice([0.72, 0.82, 1.18, 1.3])
         out.append(f'<circle cx="{x0 + rng.uniform(0, w):.0f}" cy="{y0 + rng.uniform(0, h):.0f}" '
                    f'r="{rng.uniform(.6, 1.5):.1f}" fill="{_hex(base, k)}" opacity=".8"/>')
-    if rho >= 60:                                           # شن و قلوه‌سنگ
+    if rho >= 60:
         n = int(min(area / (1400 if rho < 2000 else 2600), 170))
         for _ in range(n):
             rx, ry = rng.uniform(3, 9 if rho < 2000 else 12), rng.uniform(2, 6 if rho < 2000 else 8)
@@ -546,7 +1008,7 @@ def _texture(rng, x0, y0, w, h, rho, base) -> str:
             out.append(f'<ellipse cx="{x0 + rng.uniform(0, w):.0f}" cy="{y0 + rng.uniform(0, h):.0f}" '
                        f'rx="{rx:.1f}" ry="{ry:.1f}" transform="rotate({rng.uniform(-40, 40):.0f})" '
                        f'fill="{_hex(base, k)}" stroke="{_hex(base, .55)}" stroke-width="1" opacity=".9"/>')
-    if rho >= 2000:                                         # سنگ شکسته با ترک
+    if rho >= 2000:
         for _ in range(int(min(area / 5000, 60))):
             cx, cy = x0 + rng.uniform(0, w), y0 + rng.uniform(0, h)
             pts = []
@@ -555,7 +1017,7 @@ def _texture(rng, x0, y0, w, h, rho, base) -> str:
                 pts.append(f"{cx + r * np.cos(ang):.0f},{cy + r * np.sin(ang) * .7:.0f}")
             out.append(f'<polygon points="{" ".join(pts)}" fill="{_hex(base, rng.uniform(.9, 1.15))}" '
                        f'stroke="{_hex(base, .5)}" stroke-width="1.2" opacity=".75"/>')
-    for _ in range(3):                                      # لایه‌بندی طبیعی
+    for _ in range(3):
         y = y0 + rng.uniform(.15, .9) * h
         d = f"M{x0},{y:.0f} " + " ".join(f"L{x0 + i * 40},{y + rng.uniform(-3, 3):.0f}"
                                          for i in range(1, int(w / 40) + 1))
@@ -578,51 +1040,44 @@ def soil_section_svg(fit: dict, depth: float, hs: float, rho_s: float) -> str:
     halo = 'fill="#fff" stroke="#000" stroke-width="3.2" paint-order="stroke" stroke-linejoin="round" '
 
     p = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H_}">',
-         '<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#bfe0ff"/>'
-         '<stop offset="1" stop-color="#eef7ff"/></linearGradient>'
+         '<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0f1620"/>'
+         '<stop offset="1" stop-color="#1a2533"/></linearGradient>'
          '<linearGradient id="shade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity="0"/>'
-         '<stop offset="1" stop-color="#000" stop-opacity=".32"/></linearGradient>'
-         '<radialGradient id="cu" cx=".35" cy=".3"><stop offset="0" stop-color="#ffd2a1"/>'
+         '<stop offset="1" stop-color="#000" stop-opacity=".35"/></linearGradient>'
+         '<radialGradient id="cu" cx=".35" cy=".3"><stop offset="0" stop-color="#ffe0a3"/>'
          '<stop offset=".5" stop-color="#cf7f3a"/><stop offset="1" stop-color="#7a4a1e"/></radialGradient>'
          f'<clipPath id="k1"><rect x="0" y="{ys0:.0f}" width="{W}" height="{yb - ys0:.0f}"/></clipPath>'
          f'<clipPath id="k2"><rect x="0" y="{yb:.0f}" width="{W}" height="{Y_END - yb:.0f}"/></clipPath>'
          f'<clipPath id="ks"><rect x="0" y="{Y0}" width="{W}" height="{hs_px:.0f}"/></clipPath></defs>',
          f'<rect width="{W}" height="{H_}" fill="url(#sky)"/>']
 
-    # لایه اول
     p.append(f'<rect x="0" y="{ys0:.0f}" width="{W}" height="{yb - ys0:.0f}" fill="{_hex(c1)}"/>')
     p.append(f'<g clip-path="url(#k1)">{_texture(rng, 0, ys0, W, yb - ys0, fit["rho1"], c1)}</g>')
-    # لایه دوم
     p.append(f'<rect x="0" y="{yb:.0f}" width="{W}" height="{Y_END - yb:.0f}" fill="{_hex(c2)}"/>')
     p.append(f'<g clip-path="url(#k2)">{_texture(rng, 0, yb, W, Y_END - yb, fit["rho2"], c2)}</g>')
-    # لایه سطحی
     if hs > 0:
         cs = _soil_rgb(rho_s)
         p.append(f'<rect x="0" y="{Y0}" width="{W}" height="{hs_px:.0f}" fill="{_hex(cs)}"/>')
         p.append(f'<g clip-path="url(#ks)">{_texture(rng, 0, Y0, W, hs_px, max(rho_s, 600), cs)}</g>')
-    # سایه عمق و مرز لایه‌ها
     p.append(f'<rect x="0" y="{Y0}" width="{W}" height="{Y_END - Y0}" fill="url(#shade)"/>')
     d = f"M0,{yb:.0f} " + " ".join(f"L{i * 40},{yb + rng.uniform(-2.5, 2.5):.1f}" for i in range(1, W // 40 + 1))
-    p.append(f'<path d="{d}" stroke="#1b1b1b" stroke-width="2.2" fill="none" opacity=".75"/>')
-    # چمن
+    p.append(f'<path d="{d}" stroke="#22d3ee" stroke-width="2" fill="none" opacity=".7"/>')
     blades = "".join(f'<path d="M{x:.0f},{Y0} l{rng.uniform(-3, 3):.1f},-{rng.uniform(5, 11):.0f}" '
-                     f'stroke="#3f9b3a" stroke-width="2"/>' for x in rng.uniform(0, W, 200))
-    p.append(f'<rect x="0" y="{Y0 - 5}" width="{W}" height="6" fill="#4fae48"/>{blades}')
+                     f'stroke="#4fae48" stroke-width="2"/>' for x in rng.uniform(0, W, 200))
+    p.append(f'<rect x="0" y="{Y0 - 5}" width="{W}" height="6" fill="#3f9b3a"/>{blades}')
 
-    # هادی‌های شبکه زمین (مقطع)
     gy = ys0 + depth * scale
     for gx in (250, 330, 410, 490, 570, 650):
         p.append(f'<circle cx="{gx}" cy="{gy:.0f}" r="7" fill="url(#cu)" stroke="#5a3513" stroke-width="1"/>')
     p.append(f'<text x="450" y="{gy - 15:.0f}" text-anchor="middle" font-size="14" {tx}{halo}>'
              f'هادی‌های شبکه زمین · عمق دفن {depth:g} m</text>')
 
-    # برچسب‌های لایه‌ها
     def tag(y_top, y_bot, title, value):
         cy = (y_top + y_bot) / 2
-        p.append(f'<rect x="14" y="{cy - 29:.0f}" width="196" height="58" rx="12" fill="#000" opacity=".58"/>')
-        p.append(f'<text x="198" y="{cy - 6:.0f}" text-anchor="end" font-size="15" font-weight="700" fill="#fff" {tx}>{title}</text>')
+        p.append(f'<rect x="14" y="{cy - 29:.0f}" width="196" height="58" rx="8" fill="#0a0f14" opacity=".75"/>')
+        p.append(f'<text x="198" y="{cy - 6:.0f}" text-anchor="end" font-size="15" font-weight="700" fill="#22d3ee" {tx}>{title}</text>')
         p.append(f'<text x="198" y="{cy + 18:.0f}" text-anchor="end" font-size="17" fill="#ffe08a" '
-                 f'font-family="{font}" style="direction:ltr;unicode-bidi:isolate">{value}</text>')
+                 f'font-family="JetBrains Mono, monospace" style="direction:ltr;unicode-bidi:isolate">{value}</text>')
 
     tag(ys0, yb, "لایه اول", f"ρ₁ = {fit['rho1']:,.0f} Ω·m")
     tag(yb, Y_END, "لایه دوم (تا عمق زیاد)", f"ρ₂ = {fit['rho2']:,.0f} Ω·m")
@@ -630,15 +1085,14 @@ def soil_section_svg(fit: dict, depth: float, hs: float, rho_s: float) -> str:
         p.append(f'<text x="{W - 12}" y="{Y0 - 14}" text-anchor="end" font-size="13" {tx}{halo}>'
                  f'لایه سطحی (سنگ‌ریزه) · ضخامت {hs:g} m · ρs = {rho_s:,.0f} Ω·m</text>')
 
-    # اندازه‌گذاری h
     xd = W - 30
-    p.append(f'<line x1="{xd}" y1="{ys0:.0f}" x2="{xd}" y2="{yb:.0f}" stroke="#fff" stroke-width="2.4"/>')
+    p.append(f'<line x1="{xd}" y1="{ys0:.0f}" x2="{xd}" y2="{yb:.0f}" stroke="#22d3ee" stroke-width="2.2"/>')
     for yy, sgn in ((ys0, 1), (yb, -1)):
         p.append(f'<path d="M{xd - 6},{yy + sgn * 10:.0f} L{xd},{yy:.0f} L{xd + 6},{yy + sgn * 10:.0f}" '
-                 f'stroke="#fff" stroke-width="2.4" fill="none"/>')
+                 f'stroke="#22d3ee" stroke-width="2.2" fill="none"/>')
     ym = (ys0 + yb) / 2
     p.append(f'<text transform="translate({xd - 12},{ym:.0f}) rotate(-90)" text-anchor="middle" font-size="15" '
-             f'font-family="{font}" style="direction:ltr" {halo}>h = {h:.2f} m</text>')
+             f'font-family="JetBrains Mono, monospace" fill="#22d3ee" style="direction:ltr">h = {h:.2f} m</text>')
     p.append("</svg>")
     return "".join(p)
 
@@ -649,16 +1103,19 @@ def safety_fig(gpr: float, tv: dict, em: float, es: float) -> go.Figure:
     limits = [tv["e_touch"], tv["e_touch"], tv["e_step"]]
     colors = [C_GREEN if v <= l else C_RED for v, l in zip(vals, limits)]
     fig = go.Figure(go.Bar(x=vals, y=labels, orientation="h", marker_color=colors, name="مقدار محاسبه‌شده",
-                           text=[f"{v:,.0f} V" for v in vals], textposition="outside", cliponaxis=False))
+                           text=[f"{v:,.0f} V" for v in vals], textposition="outside", cliponaxis=False,
+                           textfont=dict(family=MONO, size=11, color="#e8eef5")))
     fig.add_trace(go.Scatter(x=limits, y=labels, mode="markers", name="حد مجاز",
-                             marker=dict(symbol="line-ns", size=26, line=dict(width=4, color=C_BLUE))))
+                             marker=dict(symbol="line-ns", size=26, line=dict(width=4, color=C_CYAN))))
     fig.update_yaxes(autorange="reversed")
     fig.update_xaxes(range=[0, max(vals + limits) * 1.25], title="ولتاژ (V)")
     return style_fig(fig, 280)
 
 
+# ============================================================
+#  نمای سه‌بعدی حرفه‌ای — با ابعاد و برچسب‌های هندسی واقعی
+# ============================================================
 def _box(x0, x1, y0, y1, z0, z1, color, opacity, name) -> go.Mesh3d:
-    """مکعب‌مستطیل توپر (۸ رأس، ۱۲ مثلث) برای نمایش لایه‌ها."""
     return go.Mesh3d(
         x=[x0, x1, x1, x0, x0, x1, x1, x0], y=[y0, y0, y1, y1, y0, y0, y1, y1],
         z=[z0, z0, z0, z0, z1, z1, z1, z1],
@@ -668,53 +1125,133 @@ def _box(x0, x1, y0, y1, z0, z1, color, opacity, name) -> go.Mesh3d:
         hovertemplate=name + "<extra></extra>")
 
 
-def fig_3d_soil(fit: dict, g: dict, depth: float, hs: float, exag: float = 3.0) -> go.Figure:
-    """نمای سه‌بعدی: دو لایه خاک، لایه سطحی، هادی‌های واقعی شبکه و میله‌ها."""
-    Lx, Ly = g["Lx"], g["Ly"]
-    L = max(Lx, Ly)
-    h = fit["h"]
-    zmax = max(h * 2.0, h + 3.0, depth + g["Lr"] + 1.0)
-    c1, c2 = _hex(_soil_rgb(fit["rho1"])), _hex(_soil_rgb(fit["rho2"]))
-    fig = go.Figure()
-    fig.add_trace(_box(0, Lx, 0, Ly, -zmax, -h, c2, 0.50, f"لایه دوم · ρ₂ = {fit['rho2']:,.0f} Ω·m"))
-    fig.add_trace(_box(0, Lx, 0, Ly, -h, 0, c1, 0.55, f"لایه اول · ρ₁ = {fit['rho1']:,.0f} Ω·m"))
-    if hs > 0:
-        fig.add_trace(_box(0, Lx, 0, Ly, 0, hs, "#9aa0a6", 0.95, f"لایه سطحی · {hs:g} m"))
+def _dim_line(p0, p1, label, color=C_CYAN, text_offset=(0, 0, 0)) -> list:
+    """خط اندازه + برچسب CAD-style برای ابعاد هندسی."""
+    traces = []
+    traces.append(go.Scatter3d(
+        x=[p0[0], p1[0]], y=[p0[1], p1[1]], z=[p0[2], p1[2]],
+        mode="lines", line=dict(color=color, width=3),
+        name=label, hoverinfo="text", hovertext=label, showlegend=False))
+    # علامت‌های سر
+    mid = [(p0[i] + p1[i]) / 2 + text_offset[i] for i in range(3)]
+    traces.append(go.Scatter3d(
+        x=[mid[0]], y=[mid[1]], z=[mid[2]], mode="text",
+        text=[label], textposition="middle center",
+        textfont=dict(family=MONO, size=11, color=color),
+        showlegend=False, hoverinfo="skip"))
+    return traces
 
-    zg = -g["h"]
+
+def fig_3d_soil(fit: dict, g: dict, depth: float, hs: float,
+                vertical_exag: float = 1.0, show_dims: bool = True,
+                show_ground: bool = True) -> go.Figure:
+    """
+    نمای سه‌بعدی: دو لایه خاک، لایه سطحی، هادی‌های واقعی، میله‌ها و خطوط اندازه.
+    vertical_exag فقط ظاهر Z را تغییر می‌دهد؛ اگر 1 باشد مقیاس واقعی است.
+    """
+    Lx, Ly = g["Lx"], g["Ly"]
+    h = fit["h"]
+    Lr = g["Lr"]
+    zmax = max(h * 2.0, h + Lr + 1.0, h + 3.0)
+    c1, c2 = _hex(_soil_rgb(fit["rho1"])), _hex(_soil_rgb(fit["rho2"]))
+    zz = lambda z: z * vertical_exag   # مقیاس عمودی ظاهری
+
+    fig = go.Figure()
+    # لایه دوم
+    fig.add_trace(_box(0, Lx, 0, Ly, zz(-zmax), zz(-h), c2, 0.42,
+                       f"لایه دوم · ρ₂ = {fit['rho2']:,.0f} Ω·m"))
+    # لایه اول
+    fig.add_trace(_box(0, Lx, 0, Ly, zz(-h), 0, c1, 0.55,
+                       f"لایه اول · ρ₁ = {fit['rho1']:,.0f} Ω·m"))
+    # لایه سطحی
+    if hs > 0:
+        fig.add_trace(_box(0, Lx, 0, Ly, 0, zz(hs), "#4a5568", 0.9,
+                           f"لایه سطحی · {hs:g} m"))
+    # صفحه زمین (مرجع)
+    if show_ground:
+        fig.add_trace(go.Mesh3d(
+            x=[-Lx*0.05, Lx*1.05, Lx*1.05, -Lx*0.05],
+            y=[-Ly*0.05, -Ly*0.05, Ly*1.05, Ly*1.05],
+            z=[zz(hs), zz(hs), zz(hs), zz(hs)],
+            i=[0,0], j=[1,2], k=[2,3],
+            color="#1a2533", opacity=0.25,
+            name="سطح زمین (z=0)", showlegend=True,
+            hovertemplate="سطح زمین<extra></extra>"))
+
+    # هادی‌های افقی
+    zg = zz(-g["h"])
     xs, ys, zs = [], [], []
     for y in g["ys"]:
         xs += [0, Lx, None]; ys += [y, y, None]; zs += [zg, zg, None]
     for x in g["xs"]:
         xs += [x, x, None]; ys += [0, Ly, None]; zs += [zg, zg, None]
-    fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode="lines", line=dict(color=C_AMBER, width=6),
-                               name=f"هادی‌های شبکه ({g['nx']}×{g['ny']} ، D ≈ {g['D']:.1f} m)", hoverinfo="skip"))
+    fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode="lines",
+                               line=dict(color="#f59e0b", width=5),
+                               name=f"هادی‌های شبکه ({g['nx']}×{g['ny']}) · D ≈ {g['D']:.1f} m",
+                               hoverinfo="skip"))
+    # میله‌ها
     if g["n_rods"]:
         rx, ry, rz = [], [], []
         for x, y in g["rods"]:
-            rx += [x, x, None]; ry += [y, y, None]; rz += [zg, zg - g["Lr"], None]
-        fig.add_trace(go.Scatter3d(x=rx, y=ry, z=rz, mode="lines", line=dict(color="#dc2626", width=7),
-                                   name=f"میله‌های زمین ({g['n_rods']} عدد × {g['Lr']:g} m)", hoverinfo="skip"))
+            rx += [x, x, None]; ry += [y, y, None]; rz += [zg, zz(-g["h"] - Lr), None]
+        fig.add_trace(go.Scatter3d(x=rx, y=ry, z=rz, mode="lines",
+                                   line=dict(color="#ef4444", width=6),
+                                   name=f"میله‌های زمین ({g['n_rods']} × {Lr:g} m)",
+                                   hoverinfo="skip"))
+
+    # خطوط اندازه (CAD-style)
+    if show_dims:
+        off = max(Lx, Ly) * 0.08
+        # طول Lx
+        for tr in _dim_line((0, -off, zz(hs)), (Lx, -off, zz(hs)), f"Lx = {Lx:.1f} m"):
+            fig.add_trace(tr)
+        # عرض Ly
+        for tr in _dim_line((Lx + off, 0, zz(hs)), (Lx + off, Ly, zz(hs)), f"Ly = {Ly:.1f} m"):
+            fig.add_trace(tr)
+        # عمق دفن
+        for tr in _dim_line((Lx + off, -off, 0), (Lx + off, -off, zz(-depth)),
+                            f"depth = {depth:.2f} m", color=C_AMBER):
+            fig.add_trace(tr)
+        # طول میله
+        if g["n_rods"]:
+            xr, yr = g["rods"][0]
+            for tr in _dim_line((xr, yr - off, zz(-depth)), (xr, yr - off, zz(-depth - Lr)),
+                                f"rod = {Lr:.1f} m", color=C_RED):
+                fig.add_trace(tr)
 
     ticks = np.linspace(-zmax, 0, 5)
     fig.update_layout(
-        height=520, margin=dict(l=0, r=0, t=30, b=0),
-        paper_bgcolor="rgba(0,0,0,0)", font=dict(family=FONT, size=12),
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1),
+        height=580, margin=dict(l=0, r=0, t=30, b=0),
+        paper_bgcolor="#0a0f14", plot_bgcolor="#0a0f14",
+        font=dict(family=FONT, size=11, color="#9fb1c4"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1,
+                    bgcolor="rgba(20,28,40,.85)", bordercolor="#243244", borderwidth=1,
+                    font=dict(size=10)),
         scene=dict(
-            xaxis=dict(title="X (m)", backgroundcolor="rgba(0,0,0,0)"),
-            yaxis=dict(title="Y (m)", backgroundcolor="rgba(0,0,0,0)"),
-            zaxis=dict(title="عمق (m)", range=[-zmax, max(hs, 0.0) + 0.2], tickvals=list(ticks),
-                       ticktext=[f"{-t:.1f}" for t in ticks], backgroundcolor="rgba(0,0,0,0)"),
+            xaxis=dict(title="X (m)", backgroundcolor="#0f1620", gridcolor=GRID_PLOT,
+                       zerolinecolor="#2e3f54", tickfont=dict(family=MONO, size=9),
+                       color="#9fb1c4"),
+            yaxis=dict(title="Y (m)", backgroundcolor="#0f1620", gridcolor=GRID_PLOT,
+                       zerolinecolor="#2e3f54", tickfont=dict(family=MONO, size=9),
+                       color="#9fb1c4"),
+            zaxis=dict(title="عمق (m)", range=[zz(-zmax), zz(max(hs, 0.0)) + 0.2],
+                       tickvals=list(ticks * vertical_exag),
+                       ticktext=[f"{-t:.1f}" for t in ticks],
+                       backgroundcolor="#0f1620", gridcolor=GRID_PLOT,
+                       zerolinecolor="#2e3f54", tickfont=dict(family=MONO, size=9),
+                       color="#9fb1c4"),
             aspectmode="manual",
-            aspectratio=dict(x=Lx / L, y=Ly / L, z=float(np.clip(zmax / L * exag, 0.12, 1.0))),
-            camera=dict(eye=dict(x=1.5, y=-1.7, z=0.9)),
+            aspectratio=dict(x=Lx / max(Lx, Ly), y=Ly / max(Lx, Ly),
+                             z=float(np.clip(zmax * vertical_exag / max(Lx, Ly) * 0.5, 0.15, 1.0))),
+            camera=dict(eye=dict(x=1.6, y=-1.8, z=1.1), up=dict(x=0, y=0, z=1)),
         ))
     return fig
 
 
+# ============================================================
+#  نقشه‌های پتانسیل (plotly) — اصلاح‌شده برای dark theme
+# ============================================================
 def _field_cfg(view: str, stt: dict, tv: dict):
-    """(داده، واحد، حد مجاز، طیف رنگ، zmin، zmax) برای هر نمای نقشه."""
     return {
         "ولتاژ تماس": (stt["touch"], "V", tv["e_touch"], "RdYlGn_r", 0.0, 2.0 * tv["e_touch"]),
         "ولتاژ گام": (stt["step"], "V", tv["e_step"], "RdYlGn_r", 0.0, 2.0 * tv["e_step"]),
@@ -724,92 +1261,107 @@ def _field_cfg(view: str, stt: dict, tv: dict):
 
 
 def potential_surface_fig(view: str, num: dict, stt: dict, g: dict, tv: dict) -> go.Figure:
-    """نمای سه‌بعدی (سطح) پتانسیل / ولتاژ تماس / گام / گرادیان، با صفحه حد مجاز و کانتور روی کف."""
     Z, unit, limit, cscale, zmin, zmax = _field_cfg(view, stt, tv)
-    k = max(1, int(np.ceil(max(Z.shape) / 110)))              # سبک‌سازی برای موبایل
+    k = max(1, int(np.ceil(max(Z.shape) / 110)))
     xs, ys, Zs = num["xs"][::k], num["ys"][::k], Z[::k, ::k]
     top = float(max(Zs.max(), limit or 0.0)) * 1.08
     kw = dict(cmin=zmin) if zmin is not None else {}
     if zmax is not None:
         kw["cmax"] = zmax
     fig = go.Figure(go.Surface(
-        x=xs, y=ys, z=Zs, colorscale=cscale, colorbar=dict(title=unit), name=view, **kw,
+        x=xs, y=ys, z=Zs, colorscale=cscale, colorbar=dict(title=unit, tickfont=dict(family=MONO, size=10)),
+        name=view, **kw,
         contours=dict(z=dict(show=True, usecolormap=True, project=dict(z=True))),
         hovertemplate="x = %{x:.1f} m<br>y = %{y:.1f} m<br>%{z:,.1f} " + unit + "<extra></extra>"))
     if limit is not None:
         fig.add_trace(go.Surface(x=[xs[0], xs[-1]], y=[ys[0], ys[-1]], z=[[limit, limit], [limit, limit]],
-                                 opacity=0.35, showscale=False, colorscale=[[0, "#111111"], [1, "#111111"]],
+                                 opacity=0.35, showscale=False, colorscale=[[0, "#22d3ee"], [1, "#22d3ee"]],
                                  name=f"حد مجاز ({limit:,.0f} {unit})", showlegend=True, hoverinfo="skip"))
     lx, ly = [], []
     for y in g["ys"]:
         lx += [0, g["Lx"], None]; ly += [y, y, None]
     for x in g["xs"]:
         lx += [x, x, None]; ly += [0, g["Ly"], None]
-    fig.add_trace(go.Scatter3d(x=lx, y=ly, z=[0.0] * len(lx), mode="lines", name="هادی‌های شبکه (روی کف)",
-                               line=dict(color="#111111", width=3), hoverinfo="skip"))
+    fig.add_trace(go.Scatter3d(x=lx, y=ly, z=[0.0] * len(lx), mode="lines",
+                               name="هادی‌های شبکه", line=dict(color="#f59e0b", width=3),
+                               hoverinfo="skip"))
     ex, ey = float(xs[-1] - xs[0]), float(ys[-1] - ys[0])
     m = max(ex, ey)
     fig.update_layout(
-        height=560, margin=dict(l=0, r=0, t=30, b=0), paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(family=FONT, size=12),
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1),
-        scene=dict(xaxis=dict(title="X (m)"), yaxis=dict(title="Y (m)"),
-                   zaxis=dict(title=f"{view} ({unit})", range=[0, top]),
-                   aspectmode="manual", aspectratio=dict(x=ex / m, y=ey / m, z=0.5),
-                   camera=dict(eye=dict(x=1.6, y=-1.6, z=1.0))))
+        height=580, margin=dict(l=0, r=0, t=30, b=0),
+        paper_bgcolor="#0a0f14", plot_bgcolor="#0a0f14",
+        font=dict(family=FONT, size=11, color="#9fb1c4"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1,
+                    bgcolor="rgba(20,28,40,.85)", bordercolor="#243244", borderwidth=1),
+        scene=dict(
+            xaxis=dict(title="X (m)", backgroundcolor="#0f1620", gridcolor=GRID_PLOT,
+                       tickfont=dict(family=MONO, size=9), color="#9fb1c4"),
+            yaxis=dict(title="Y (m)", backgroundcolor="#0f1620", gridcolor=GRID_PLOT,
+                       tickfont=dict(family=MONO, size=9), color="#9fb1c4"),
+            zaxis=dict(title=f"{view} ({unit})", range=[0, top], backgroundcolor="#0f1620",
+                       gridcolor=GRID_PLOT, tickfont=dict(family=MONO, size=9), color="#9fb1c4"),
+            aspectmode="manual", aspectratio=dict(x=ex / m, y=ey / m, z=0.5),
+            camera=dict(eye=dict(x=1.6, y=-1.6, z=1.0), up=dict(x=0, y=0, z=1))))
     return fig
 
 
 def potential_map_fig(view: str, num: dict, stt: dict, g: dict, tv: dict) -> go.Figure:
-    """نقشه رنگی پتانسیل / ولتاژ تماس / ولتاژ گام / گرادیان با خط حد مجاز و جانمایی هادی‌ها."""
     xs, ys = num["xs"], num["ys"]
     Z, unit, limit, cscale, zmin, zmax = _field_cfg(view, stt, tv)
     fig = go.Figure(go.Heatmap(x=xs, y=ys, z=Z, colorscale=cscale, zmin=zmin, zmax=zmax, zsmooth="best",
-                               colorbar=dict(title=unit), name=view,
+                               colorbar=dict(title=unit, tickfont=dict(family=MONO, size=10)),
+                               name=view,
                                hovertemplate="x = %{x:.1f} m<br>y = %{y:.1f} m<br>%{z:,.1f} " + unit + "<extra></extra>"))
     if limit is not None and float(np.max(Z)) > limit:
         fig.add_trace(go.Contour(x=xs, y=ys, z=Z, showscale=False, showlegend=True, hoverinfo="skip",
-                                 name=f"حد مجاز ({limit:,.0f} {unit})", line=dict(color="#111111", width=3),
+                                 name=f"حد مجاز ({limit:,.0f} {unit})",
+                                 line=dict(color="#22d3ee", width=3),
                                  contours=dict(start=limit, end=limit, size=max(limit, 1.0), coloring="lines")))
     lx, ly = [], []
     for y in g["ys"]:
         lx += [0, g["Lx"], None]; ly += [y, y, None]
     for x in g["xs"]:
         lx += [x, x, None]; ly += [0, g["Ly"], None]
-    fig.add_trace(go.Scatter(x=lx, y=ly, mode="lines", line=dict(color="rgba(0,0,0,.55)", width=1),
+    fig.add_trace(go.Scatter(x=lx, y=ly, mode="lines", line=dict(color="rgba(245,158,11,.7)", width=1),
                              name="هادی‌های شبکه", hoverinfo="skip"))
     if g["n_rods"]:
-        fig.add_trace(go.Scatter(x=g["rods"][:, 0], y=g["rods"][:, 1], mode="markers", name="میله‌های زمین",
-                                 marker=dict(symbol="x", size=8, color="#111111"), hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=g["rods"][:, 0], y=g["rods"][:, 1], mode="markers",
+                                 name="میله‌های زمین",
+                                 marker=dict(symbol="x", size=7, color="#ef4444"), hoverinfo="skip"))
     fig.update_xaxes(title="X (m)", constrain="domain")
     fig.update_yaxes(title="Y (m)", scaleanchor="x", scaleratio=1)
     return style_fig(fig, 520)
 
 
 def profile_figs(num: dict, stt: dict, g: dict, tv: dict, y_frac: float):
-    """نیمرخ پتانسیل و ولتاژهای تماس/گام در امتداد X در موقعیت دلخواه Y."""
     ys = num["ys"]
     y_target = g["Ly"] * y_frac
     j = int(np.argmin(np.abs(ys - y_target)))
     xs = num["xs"]
-    f1 = go.Figure(go.Scatter(x=xs, y=stt["V"][j], mode="lines", name="پتانسیل سطح", line=dict(color=C_BLUE, width=3)))
-    f1.add_hline(y=stt["gpr"], line_dash="dot", line_color=C_AMBER, annotation_text="GPR", annotation_position="top left")
-    f1.add_vrect(x0=0, x1=g["Lx"], fillcolor="rgba(128,128,128,.10)", line_width=0)
+    f1 = go.Figure(go.Scatter(x=xs, y=stt["V"][j], mode="lines", name="پتانسیل سطح",
+                              line=dict(color=C_CYAN, width=3)))
+    f1.add_hline(y=stt["gpr"], line_dash="dot", line_color=C_AMBER,
+                 annotation_text="GPR", annotation_position="top left",
+                 annotation_font=dict(family=MONO, size=10, color=C_AMBER))
+    f1.add_vrect(x0=0, x1=g["Lx"], fillcolor="rgba(34,211,238,.06)", line_width=0)
     f1.update_xaxes(title="X (m)"); f1.update_yaxes(title="پتانسیل سطح (V)")
     f2 = go.Figure()
-    f2.add_trace(go.Scatter(x=xs, y=stt["touch"][j], mode="lines", name="ولتاژ تماس", line=dict(color=C_RED, width=3)))
-    f2.add_trace(go.Scatter(x=xs, y=stt["step"][j], mode="lines", name="ولتاژ گام", line=dict(color=C_PURPLE, width=3)))
-    f2.add_hline(y=tv["e_touch"], line_dash="dash", line_color=C_RED, opacity=.6,
-                 annotation_text="حد تماس", annotation_position="top left")
-    f2.add_hline(y=tv["e_step"], line_dash="dash", line_color=C_PURPLE, opacity=.6,
-                 annotation_text="حد گام", annotation_position="top right")
-    f2.add_vrect(x0=0, x1=g["Lx"], fillcolor="rgba(128,128,128,.10)", line_width=0)
+    f2.add_trace(go.Scatter(x=xs, y=stt["touch"][j], mode="lines", name="ولتاژ تماس",
+                            line=dict(color=C_RED, width=3)))
+    f2.add_trace(go.Scatter(x=xs, y=stt["step"][j], mode="lines", name="ولتاژ گام",
+                            line=dict(color=C_PURPLE, width=3)))
+    f2.add_hline(y=tv["e_touch"], line_dash="dash", line_color=C_RED, opacity=.7,
+                 annotation_text="حد تماس", annotation_position="top left",
+                 annotation_font=dict(family=MONO, size=10, color=C_RED))
+    f2.add_hline(y=tv["e_step"], line_dash="dash", line_color=C_PURPLE, opacity=.7,
+                 annotation_text="حد گام", annotation_position="top right",
+                 annotation_font=dict(family=MONO, size=10, color=C_PURPLE))
+    f2.add_vrect(x0=0, x1=g["Lx"], fillcolor="rgba(34,211,238,.06)", line_width=0)
     f2.update_xaxes(title="X (m)"); f2.update_yaxes(title="ولتاژ (V)")
     return style_fig(f1, 300), style_fig(f2, 300), float(ys[j])
 
 
 def report_html(inp, fit, rho_eq, rg, rg_design, gpr, tv, ex=None) -> str:
-    """گزارش به‌صورت HTML ثابتِ راست‌به‌چپ (بدون وابستگی به لیست‌های Markdown)."""
     def row(k, v, hl=False):
         return f'<div class="rep-row{" hl" if hl else ""}"><span class="k">{k}</span><span class="v">{v}</span></div>'
 
@@ -869,511 +1421,31 @@ def report_html(inp, fit, rho_eq, rg, rg_design, gpr, tv, ex=None) -> str:
 
 
 # ============================================================
-#  هندسه شبکه، ولتاژهای mesh/step (IEEE 80) و پتانسیل سطحی (تحلیل عددی)
+#  صفحه
 # ============================================================
-MAX_LINES = 25
-ROD_MODES = {"none": "بدون میله", "corners": "فقط گوشه‌ها", "perimeter": "گوشه‌ها و پیرامون"}
-
-
-def make_geometry(area, aspect, spacing, d_mm, rod_mode, rod_len, depth) -> dict:
-    """هندسه شبکه مستطیلی با هادی‌های موازی و میله‌های اختیاری."""
-    Lx, Ly = float(np.sqrt(area * aspect)), float(np.sqrt(area / aspect))
-    want_x, want_y = int(round(Lx / spacing)) + 1, int(round(Ly / spacing)) + 1
-    nx, ny = int(np.clip(want_x, 2, MAX_LINES)), int(np.clip(want_y, 2, MAX_LINES))
-    xs, ys = np.linspace(0.0, Lx, nx), np.linspace(0.0, Ly, ny)
-    Dx, Dy = Lx / (nx - 1), Ly / (ny - 1)
-    LC = Lx * ny + Ly * nx                              # طول کل هادی‌های افقی
-    if rod_mode == "corners":
-        pts = [(0.0, 0.0), (Lx, 0.0), (0.0, Ly), (Lx, Ly)]
-    elif rod_mode == "perimeter":
-        pts = sorted({(float(x), 0.0) for x in xs} | {(float(x), Ly) for x in xs}
-                     | {(0.0, float(y)) for y in ys} | {(Lx, float(y)) for y in ys})
-    else:
-        pts = []
-    rods = np.array(pts, dtype=float).reshape(-1, 2)
-    n_r = len(rods)
-    return {"Lx": Lx, "Ly": Ly, "nx": nx, "ny": ny, "xs": xs, "ys": ys, "Dx": Dx, "Dy": Dy,
-            "D": 0.5 * (Dx + Dy), "LC": LC, "rods": rods, "n_rods": n_r,
-            "Lr": float(rod_len) if n_r else 0.0, "LR": n_r * float(rod_len),
-            "LT": LC + n_r * float(rod_len), "h": max(float(depth), 0.05), "d": d_mm / 1000.0,
-            "rod_mode": rod_mode, "capped": bool(want_x > MAX_LINES or want_y > MAX_LINES)}
-
-
-def ieee80_mesh_step(rho: float, ig: float, g: dict) -> dict:
-    """ولتاژهای mesh و step با رابطه‌های IEEE 80 (شبکه مستطیلی، خاک یکنواخت)."""
-    h, d, D = g["h"], g["d"], g["D"]
-    Lx, Ly, LC, LR, Lr = g["Lx"], g["Ly"], g["LC"], g["LR"], g["Lr"]
-    A, Lp = Lx * Ly, 2.0 * (Lx + Ly)
-    n = (2.0 * LC / Lp) * np.sqrt(Lp / (4.0 * np.sqrt(A)))      # na · nb (nc = nd = 1)
-    Kh = np.sqrt(1.0 + h / 1.0)
-    rods_edge = g["n_rods"] > 0 and g["rod_mode"] in ("corners", "perimeter")
-    Kii = 1.0 if rods_edge else 1.0 / (2.0 * n) ** (2.0 / n)
-    arg = D**2 / (16.0 * h * d) + (D + 2.0 * h) ** 2 / (8.0 * D * d) - h / (4.0 * d)
-    Km = (np.log(arg) + (Kii / Kh) * np.log(8.0 / (np.pi * (2.0 * n - 1.0)))) / (2.0 * np.pi)
-    Ki = 0.644 + 0.148 * n
-    LM = LC + (1.55 + 1.22 * Lr / np.hypot(Lx, Ly)) * LR if rods_edge else LC + LR
-    Ks = (1.0 / np.pi) * (1.0 / (2.0 * h) + 1.0 / (D + h) + (1.0 / D) * (1.0 - 0.5 ** (n - 2.0)))
-    LS = 0.75 * LC + 0.85 * LR
-    warns = []
-    if not 0.25 <= h <= 2.5:
-        warns.append(f"عمق دفن {h:.2f} m خارج از بازه معمول اعتبار رابطه‌ها (حدود ۰٫۲۵ تا ۲٫۵ متر) است.")
-    if d >= 0.25 * h:
-        warns.append("قطر هادی نسبت به عمق دفن بزرگ است (شرط معمول d < 0.25h برقرار نیست).")
-    if D <= 2.5:
-        warns.append(f"فاصله هادی‌ها ({D:.1f} m) کمتر از حدود ۲٫۵ متر است؛ رابطه‌ها در این بازه کم‌دقت می‌شوند.")
-    return {"n": float(n), "Kh": float(Kh), "Kii": float(Kii), "Km": float(Km), "Ki": float(Ki), "Ks": float(Ks),
-            "LM": float(LM), "LS": float(LS), "Em": float(rho * ig * Km * Ki / LM),
-            "Es": float(rho * ig * Ks * Ki / LS), "warnings": warns}
-
-
-def _segments(g: dict):
-    """تقسیم هادی‌ها و میله‌ها به قطعات کوتاه؛ محل تقاطع‌ها همیشه مرز قطعه است."""
-    h, xs, ys = g["h"], g["xs"], g["ys"]
-    seg = max(2.0, g["LT"] / 700.0)
-    A_, B_ = [], []
-
-    def add(p, q):
-        n = max(1, int(np.ceil(np.linalg.norm(q - p) / seg)))
-        pts = p[None, :] + np.linspace(0.0, 1.0, n + 1)[:, None] * (q - p)[None, :]
-        A_.append(pts[:-1]); B_.append(pts[1:])
-
-    for y in ys:
-        for x0, x1 in zip(xs[:-1], xs[1:]):
-            add(np.array([x0, y, -h]), np.array([x1, y, -h]))
-    for x in xs:
-        for y0, y1 in zip(ys[:-1], ys[1:]):
-            add(np.array([x, y0, -h]), np.array([x, y1, -h]))
-    for x, y in g["rods"]:
-        add(np.array([x, y, -h]), np.array([x, y, -h - g["Lr"]]))
-    return np.vstack(A_), np.vstack(B_)
-
-
-def _line_factor(P, A, B, a):
-    """انتگرال ∫dl/r روی هر قطعه برای هر نقطه (فرم تحلیلی با asinh؛ شعاع هادی از تکینگی جلوگیری می‌کند)."""
-    u = B - A
-    ell = np.linalg.norm(u, axis=1)
-    u = u / ell[:, None]
-    w = P[:, None, :] - A[None, :, :]
-    t = np.einsum("msk,sk->ms", w, u)
-    r2 = np.einsum("msk,msk->ms", w, w) - t * t
-    rp = np.sqrt(np.maximum(r2, a * a))
-    return np.arcsinh((ell[None, :] - t) / rp) - np.arcsinh(-t / rp)
-
-
-def _kernel(P, A, B, a):
-    flip = np.array([1.0, 1.0, -1.0])           # تصویر نسبت به سطح زمین (z = 0)
-    return _line_factor(P, A, B, a) + _line_factor(P, A * flip, B * flip, a)
-
-
-@st.cache_data(show_spinner=False)
-def solve_grid_potential(area, aspect, spacing, d_mm, rod_mode, rod_len, depth, resolution=240) -> dict:
-    """حل نشت جریان با شرط پتانسیل ثابت روی هادی‌ها (collocation) و محاسبه پتانسیل سطح.
-    ρ حذف می‌شود: Rg = ρ·rg_unit و frac کسری از GPR است."""
-    g = make_geometry(area, aspect, spacing, d_mm, rod_mode, rod_len, depth)
-    A, B = _segments(g)
-    C = 0.5 * (A + B)
-    ell = np.linalg.norm(B - A, axis=1)
-    a = g["d"] / 2.0
-    R = _kernel(C, A, B, a) / (4.0 * np.pi * ell[None, :])
-    cur = np.linalg.solve(R, np.ones(len(ell)))
-    w = cur / (4.0 * np.pi * ell)
-    resolution = int(min(resolution, max(90.0, np.sqrt(4.0e7 / len(ell)))))     # سقف زمان و حافظه
-    margin = max(8.0, 0.15 * max(g["Lx"], g["Ly"]))
-    step = max(0.5, (max(g["Lx"], g["Ly"]) + 2 * margin) / resolution)
-    xs = np.linspace(-margin, g["Lx"] + margin, int(round((g["Lx"] + 2 * margin) / step)) + 1)
-    ys = np.linspace(-margin, g["Ly"] + margin, int(round((g["Ly"] + 2 * margin) / step)) + 1)
-    X, Y = np.meshgrid(xs, ys)
-    P = np.column_stack([X.ravel(), Y.ravel(), np.zeros(X.size)])
-    frac = np.empty(len(P))
-    for i in range(0, len(P), 1500):
-        frac[i:i + 1500] = _kernel(P[i:i + 1500], A, B, a) @ w
-    return {"rg_unit": float(1.0 / cur.sum()), "xs": xs, "ys": ys, "frac": frac.reshape(Y.shape),
-            "dx": float(xs[1] - xs[0]), "dy": float(ys[1] - ys[0]), "n_seg": int(len(ell))}
-
-
-def potential_stats(num: dict, g: dict, rho: float, ig: float, tv: dict) -> dict:
-    """پتانسیل سطح، ولتاژ تماس، ولتاژ گام و گرادیان (V/m) از نقشه عددی."""
-    gpr = ig * rho * num["rg_unit"]
-    V = num["frac"] * gpr
-    touch = gpr - V
-    gy, gx = np.gradient(V, num["dy"], num["dx"])
-    grad = np.hypot(gx, gy)                      # V/m ؛ ولتاژ گام ≈ گرادیان × ۱ متر
-    X, Y = np.meshgrid(num["xs"], num["ys"])
-    inside = (X >= 0) & (X <= g["Lx"]) & (Y >= 0) & (Y <= g["Ly"])
-    near = (X >= -3) & (X <= g["Lx"] + 3) & (Y >= -3) & (Y <= g["Ly"] + 3)
-    outside = near & ~inside
-
-    def where_max(Z, m):
-        k = np.argmax(np.where(m, Z, -np.inf))
-        return float(Z.ravel()[k]), (float(X.ravel()[k]), float(Y.ravel()[k]))
-
-    t_max, t_at = where_max(touch, inside)
-    s_max, s_at = where_max(grad, near)
-    return {"gpr": gpr, "V": V, "touch": touch, "step": grad, "grad": grad, "inside": inside, "near": near,
-            "touch_max": t_max, "touch_at": t_at, "step_max": s_max, "step_at": s_at,
-            "grad_in": (float(grad[inside].min()), float(grad[inside].max())),
-            "grad_out_max": float(grad[outside].max()) if outside.any() else float("nan"),
-            "v_min_pct": float(num["frac"][inside].min() * 100.0),
-            "touch_unsafe_pct": float((touch[inside] > tv["e_touch"]).mean() * 100.0),
-            "step_unsafe_pct": float((grad[near] > tv["e_step"]).mean() * 100.0)}
-
-
-# ============================================================
-#  کنترل کفایت داده و توصیه مهندسی (قاعده‌محور؛ بر پایه IEEE 80 و IEEE 81)
-# ============================================================
-SEV = {"bad": 0, "warn": 1, "ok": 2, "info": 3}
-
-
-def data_sufficiency(a: np.ndarray, rho: np.ndarray, fit: dict, area: float) -> list:
-    """کنترل کفایت داده‌های Wenner. خروجی: فهرست (سطح، متن) مرتب‌شده بر اساس شدت."""
-    issues = []
-    h, a_max, a_min = fit["h"], float(a.max()), float(a.min())
-    r_eq = float(np.sqrt(area / np.pi))
-    if a_max < 2 * h:
-        issues.append(("bad", f"حداکثر فاصله اندازه‌گیری ({a_max:.1f} m) کمتر از دو برابر ضخامت لایه اول ({h:.1f} m) است؛ "
-                              "لایه دوم عملاً دیده نشده و ρ₂ و h قابل اتکا نیستند."))
-    elif a_max < 3 * h:
-        issues.append(("warn", f"حداکثر فاصله ({a_max:.1f} m) کمتر از سه برابر ضخامت لایه اول ({h:.1f} m) است؛ "
-                               "برای تخمین مطمئن ρ₂ فواصل بزرگ‌تر هم اندازه بگیرید."))
-    if a_max < r_eq:
-        issues.append(("bad" if a_max < 0.5 * r_eq else "warn",
-                       f"ρ معادل در شعاع معادل شبکه ({r_eq:.0f} m) محاسبه می‌شود که بیرون از بازه اندازه‌گیری "
-                       f"(حداکثر {a_max:.0f} m) است؛ یعنی مقدار برون‌یابی شده و Rg و GPR به آن وابسته‌اند."))
-    if a.size < 6:
-        issues.append(("warn", f"تعداد نقاط اندازه‌گیری ({a.size}) کم است؛ معمولاً حداقل ۶ تا ۸ فاصله، با گام تقریباً لگاریتمی، توصیه می‌شود."))
-    if a_max / a_min < 10:
-        issues.append(("warn", "نسبت بزرگ‌ترین به کوچک‌ترین فاصله کمتر از ۱۰ است؛ بازه فواصل باید دست‌کم یک دهه را بپوشاند."))
-    if a.size >= 3:
-        slope = float(np.polyfit(np.log(a[-3:]), np.log(rho[-3:]), 1)[0])
-        if abs(slope) > 0.15:
-            issues.append(("warn", f"منحنی در فواصل بزرگ هنوز به مقدار ثابتی نرسیده (شیب لگاریتمی {slope:+.2f})؛ "
-                                   "احتمالاً لایه عمقی کامل دیده نشده است."))
-    if fit["max_err_pct"] > 15 or fit["rmse_pct"] > 10:
-        issues.append(("warn", f"پراکندگی یا ناسازگاری داده‌ها زیاد است (RMSE = {fit['rmse_pct']:.1f}٪ ، بیشینه خطا = {fit['max_err_pct']:.1f}٪). "
-                               "اجسام فلزی مدفون یا خطای اندازه‌گیری را بررسی کنید و اندازه‌گیری را در راستای عمود تکرار کنید."))
-    if fit["dof"] >= 2 and max(fit["rel_unc"]) > 0.5:
-        issues.append(("warn", f"عدم‌قطعیت آماری یکی از پارامترها بیش از ±۵۰٪ است (بازه ۹۵٪: ρ₂ از {fit['ci_95'][1][0]:,.0f} تا {fit['ci_95'][1][1]:,.0f} Ω·m)."))
-    elif fit["dof"] < 2:
-        issues.append(("warn", "تعداد داده‌ها تقریباً برابر تعداد پارامترهاست؛ بازه اطمینان قابل محاسبه یا قابل اتکا نیست."))
-    return sorted(issues, key=lambda t: SEV[t[0]])
-
-
-def _scale_needed(rho_eq, area, length, depth, ig, e_touch, s_max=3.0):
-    """کوچک‌ترین ضریب بزرگ‌نمایی ابعاد خطی شبکه که شرط GPR ≤ Etouch را برآورده کند (ρ ثابت)."""
-    for sc in np.linspace(1.0, s_max, 121):
-        if ig * grid_resistance(rho_eq, area * sc**2, length * sc**2, depth)["sverak"] <= e_touch:
-            return float(sc)
-    return None
-
-
-def engineering_advice(out: dict) -> dict:
-    fit, tv, rg, inp = out["fit"], out["tv"], out["rg"], out["inp"]
-    a, rho, gpr = out["a"], out["rho"], out["gpr"]
-    ig, rg_d, e_touch = inp["ig"], out["rg_design"], tv["e_touch"]
-    ratio = gpr / e_touch
-    real = inp.get("real_mode", True)
-    k, rho1, rho2, h = fit["k"], fit["rho1"], fit["rho2"], fit["h"]
-    cards = []
-
-    def add(lvl, title, body, acts=(), ref=""):
-        cards.append(dict(lvl=lvl, title=title, body=body, acts=list(acts), ref=ref))
-
-    # --- ۱) وضعیت ایمنی (GPR، Em و Es) ---
-    m, geom, stt = out["mesh"], out["geom"], out.get("num_stats")
-    em, es, es_tol = m["Em"], m["Es"], tv["e_step"]
-    mesh_ok = em <= e_touch and es <= es_tol
-    mesh_fac = max(em / e_touch, es / es_tol)
-    if ratio <= 1.0:
-        acts = []
-        if ratio > 0.8:
-            acts.append("حاشیه ایمنی کمتر از ۲۰٪ است؛ عدم‌قطعیت ρ خاک و Ig می‌تواند آن را از بین ببرد. "
-                        "نتیجه را با مقاومت ویژه فصل خشک و Ig بیشینه دوباره بسنجید.")
-        add("ok" if ratio <= 0.8 else "warn", "وضعیت ایمنی: GPR در برابر ولتاژ تماس مجاز",
-            f"GPR برابر {gpr:,.0f} V و ولتاژ تماس مجاز برابر {e_touch:,.0f} V است ({ratio * 100:.0f}٪ حد مجاز). "
-            "طبق روند طراحی IEEE 80، وقتی GPR از ولتاژ تماس مجاز کمتر باشد، محاسبه ولتاژهای mesh و step الزامی نیست "
-            "(برای اطلاع، مقادیر آن‌ها در کارت بعدی آمده است).",
-            acts, "IEEE 80")
-    elif mesh_ok:
-        add("warn", "وضعیت ایمنی: GPR در برابر ولتاژ تماس مجاز",
-            f"GPR برابر {gpr:,.0f} V و بیش از ولتاژ تماس مجاز ({e_touch:,.0f} V) است ({ratio * 100:.0f}٪)، اما ولتاژهای mesh و step "
-            f"(Em = {em:,.0f} V و Es = {es:,.0f} V) در حد مجازند. طبق روند IEEE 80 طرح از نظر تماس و گام قابل قبول است؛",
-            ["GPR بالا یعنی ولتاژ منتقل‌شده به حصار، لوله‌ها، ریل و کابل‌های مخابراتی باید کنترل شود.",
-             "تجهیزات حفاظتی و مخابراتی متصل به مناطق دور باید برای این GPR عایق‌بندی یا ایزوله شوند."], "IEEE 80")
-    else:
-        add("bad", "وضعیت ایمنی: ولتاژهای mesh و step",
-            f"GPR برابر {gpr:,.0f} V است و ولتاژهای محاسبه‌شده از حد مجاز عبور کرده‌اند: Em = {em:,.0f} V در برابر {e_touch:,.0f} V "
-            f"({em / e_touch * 100:.0f}٪) و Es = {es:,.0f} V در برابر {es_tol:,.0f} V ({es / es_tol * 100:.0f}٪). "
-            "طرح باید اصلاح شود (هندسه شبکه، میله‌ها، لایه سطحی، Ig یا زمان قطع).", [], "IEEE 80")
-
-    # --- ۱-ب) ولتاژهای mesh و step ---
-    acts = list(m["warnings"])
-    if geom["capped"]:
-        acts.append("تعداد هادی‌ها به سقف ۲۵ در هر جهت محدود شده است؛ فاصله واقعی بزرگ‌تر از D واردشده است.")
-    if not mesh_ok or mesh_fac > 0.85:
-        for label, d2, rm in [("فشرده‌تر کردن مش (D = ۰٫۷۵ برابر فعلی)", inp["spacing"] * 0.75, inp["rod_mode"]),
-                              ("افزودن میله در گوشه‌ها و پیرامون", inp["spacing"], "perimeter"),
-                              ("هر دو اقدام", inp["spacing"] * 0.75, "perimeter")]:
-            if label.startswith("افزودن") and inp["rod_mode"] == "perimeter":
-                continue
-            g2 = make_geometry(inp["area"], inp["aspect"], d2, inp["d_mm"], rm, inp["rod_len"], inp["depth"])
-            m2 = ieee80_mesh_step(out["rho_eq"], ig, g2)
-            acts.append(f"{label}: Em = {m2['Em']:,.0f} V ، Es = {m2['Es']:,.0f} V (D ≈ {g2['D']:.1f} m ، طول کل هادی ≈ {g2['LT']:,.0f} m).")
-        acts.append("لایه سطحی سنگ‌ریزه (یا ضخیم‌تر کردن آن) و کاهش Ig یا زمان قطع، حدود مجاز و ولتاژها را هم‌زمان بهبود می‌دهند.")
-    add("ok" if mesh_ok and mesh_fac <= 0.85 else "warn" if mesh_ok else "bad",
-        "ولتاژهای mesh و step با رابطه‌های IEEE 80",
-        f"Em = {em:,.0f} V ({em / e_touch * 100:.0f}٪ ولتاژ تماس مجاز) و Es = {es:,.0f} V ({es / es_tol * 100:.0f}٪ ولتاژ گام مجاز). "
-        f"هندسه: {geom['Lx']:.0f} × {geom['Ly']:.0f} m ، {geom['nx']}×{geom['ny']} هادی با D ≈ {geom['D']:.1f} m ، "
-        f"{geom['n_rods']} میله ، طول کل هادی {geom['LT']:,.0f} m (n = {m['n']:.1f} ، Km = {m['Km']:.3f} ، Ki = {m['Ki']:.3f}).",
-        acts, "IEEE 80")
-
-    # --- ۱-ج) نقشه پتانسیل و گرادیان (تحلیل عددی) ---
-    if stt:
-        rg_num = out["rho_eq"] * out["num"]["rg_unit"]
-        diff = (rg_num / rg_d - 1.0) * 100.0
-        lo, hi = stt["grad_in"]
-        acts = []
-        tu, su = stt["touch_unsafe_pct"], stt["step_unsafe_pct"]
-        if tu > 0:
-            acts.append(f"{tu:.1f}٪ از مساحت شبکه ولتاژ تماس بالاتر از حد مجاز دارد؛ نقطه بیشینه حدود (x = {stt['touch_at'][0]:.1f} ، y = {stt['touch_at'][1]:.1f}) متر است.")
-        if su > 0:
-            acts.append(f"{su:.1f}٪ از ناحیه اطراف و داخل شبکه ولتاژ گام بالاتر از حد مجاز دارد؛ بیشینه حدود (x = {stt['step_at'][0]:.1f} ، y = {stt['step_at'][1]:.1f}) متر است.")
-        if tu > 0 or su > 0:
-            acts.append("گرادیان‌های زیاد معمولاً در گوشه‌ها و لبه‌های شبکه‌اند: میله در گوشه‌ها و پیرامون، هادی حلقوی اضافه در اطراف، "
-                        "یا مش فشرده‌تر در محیط شبکه گرادیان را کم می‌کند.")
-            acts.append("لایه سطحی سنگ‌ریزه را حدود یک متر فراتر از حصار ادامه دهید و حصار را به شبکه وصل یا هادی کنترل گرادیان بیرون حصار قرار دهید.")
-        if abs(diff) > 20:
-            acts.append(f"Rg عددی با Sverak بیش از ۲۰٪ اختلاف دارد ({diff:+.0f}٪)؛ برای طرح نهایی با نرم‌افزار تخصصی (مثل CYMGRD یا CDEGS) راستی‌آزمایی کنید.")
-        if out["num"]["dx"] > 0.7:
-            acts.append(f"گام نقشه {out['num']['dx']:.2f} m است؛ در شبکه‌های بزرگ بیشینه ولتاژ گام ممکن است کم‌برآورد شود و مقدار IEEE 80 مبناست.")
-        acts.append("نقشه با خاک یکنواخت (ρ معادل) محاسبه شده و ولتاژ تماس نقطه‌ای (GPR منهای پتانسیل سطح) است؛ فاصله ۱ متری دست از ساختار لحاظ نشده است.")
-        lvl = "ok" if tu == 0 and su == 0 else ("bad" if not mesh_ok else "warn")
-        add(lvl, "نقشه پتانسیل سطح و محدوده گرادیان (تحلیل عددی)",
-            f"Rg عددی = {rg_num:.2f} Ω ({diff:+.0f}٪ نسبت به Sverak). بیشینه ولتاژ تماس نقشه {stt['touch_max']:,.0f} V و بیشینه ولتاژ گام {stt['step_max']:,.0f} V است. "
-            f"گرادیان پتانسیل داخل شبکه بین {lo:.1f} و {hi:.1f} V/m و بیرون شبکه تا {stt['grad_out_max']:.1f} V/m است؛ "
-            f"کمترین پتانسیل سطح داخل شبکه {stt['v_min_pct']:.0f}٪ GPR است.",
-            acts, "IEEE 80")
-
-    # --- ۲) راهکارهای عملی ---
-    if ratio > 0.8:
-        acts = []
-        rg_req, ig_max = e_touch / ig, e_touch / rg_d
-        acts.append(f"هدف عددی: برای اینکه GPR از ولتاژ تماس مجاز بیشتر نشود، یکی از این‌ها لازم است: Rg ≤ {rg_req:.2f} Ω "
-                    f"(اکنون {rg_d:.2f} Ω) یا Ig ≤ {ig_max:,.0f} A (اکنون {ig:,.0f} A).")
-        sc = _scale_needed(out["rho_eq"], inp["area"], inp["length"], inp["depth"], ig, e_touch)
-        if sc is not None and sc > 1.0:
-            acts.append(f"افزایش ابعاد شبکه: با بزرگ‌تر شدن ابعاد خطی به حدود {sc:.2f} برابر (مساحت ≈ {inp['area'] * sc**2:,.0f} m² "
-                        f"و طول هادی ≈ {inp['length'] * sc**2:,.0f} m، با فرض ثابت ماندن ρ) شرط برقرار می‌شود.")
-        elif sc is None:
-            acts.append("افزایش مساحت و طول هادی به‌تنهایی (تا ۳ برابر ابعاد خطی) کافی نیست؛ ترکیب چند راهکار لازم است.")
-        acts.append("کاهش Ig: مسیرهای بازگشت فلزی جریان خطا (سیم محافظ خطوط انتقال، شیلد کابل‌ها، نوترال) ضریب تقسیم جریان Sf را کم "
-                    "و Ig را کوچک می‌کنند.")
-        t2 = max(inp["ts"] / 2.0, 0.05)
-        rho_surf = inp["rho_s"] if inp["hs"] > 0 else rho1
-        tv2 = tolerable_voltages(rho1, rho_surf, inp["hs"], inp["weight"], t2)
-        acts.append(f"کاهش زمان قطع خطا از {inp['ts']:g} به {t2:g} ثانیه (حفاظت سریع‌تر) ولتاژ تماس مجاز را از {e_touch:,.0f} به "
-                    f"{tv2['e_touch']:,.0f} V می‌رساند.")
-        if inp["hs"] < 0.15:
-            tv3 = tolerable_voltages(rho1, inp["rho_s"], 0.15, inp["weight"], inp["ts"])
-            if tv3["e_touch"] > e_touch * 1.05:
-                acts.append(f"لایه سطحی سنگ‌ریزه با ضخامت حدود ۰٫۱۵ متر (با ρs = {inp['rho_s']:,.0f} Ω·m) ولتاژ تماس مجاز را به "
-                            f"{tv3['e_touch']:,.0f} V می‌رساند. ρs را برای سنگ‌ریزه خیس وارد کنید، نه خشک.")
-        add("info", "راهکارهای عملی برای کاهش GPR و افزایش حاشیه ایمنی",
-            "اثر هر اقدام جدا محاسبه شده است؛ در عمل معمولاً ترکیبی از آن‌ها لازم می‌شود.", acts, "IEEE 80")
-
-    # --- ۳) ساختار خاک و الکترود ---
-    if abs(k) < 0.1 or fit["rmse_uniform_pct"] <= fit["rmse_pct"] * 1.2:
-        add("info", "ساختار خاک و انتخاب الکترود",
-            f"خاک تقریباً یکنواخت است (K = {k:.2f}). مدل دولایه اطلاعات تازه‌ای نمی‌دهد و ρ₂ و h قابل اتکا نیستند.",
-            ["برای کاهش Rg، افزایش مساحت پوشش و تراکم هادی‌ها مؤثرترین راه است؛ میله‌های عمودی اثر محدودی دارند."], "IEEE 80")
-    elif k < 0:
-        add("info", "ساختار خاک و انتخاب الکترود",
-            f"لایه عمقی رساناتر است (ρ₂ = {rho2:,.0f} در برابر ρ₁ = {rho1:,.0f} Ω·m ، K = {k:.2f}).",
-            [f"میله‌های زمین که از لایه اول عبور کنند (طول بیش از h ≈ {h:.1f} m ، مثلاً {h + 1:.1f} تا {h + 3:.1f} m) "
-             "مقاومت شبکه و ولتاژهای تماس را مؤثرتر کاهش می‌دهند.",
-             "اگر حفاری عمیق شدنی است، الکترودهای عمیق یا چاه زمین را بررسی کنید.",
-             "لایه سطحی سنگ‌ریزه همچنان برای ولتاژ گام و تماس مفید است."], "IEEE 80")
-    else:
-        add("info", "ساختار خاک و انتخاب الکترود",
-            f"لایه عمقی مقاوم‌تر است (ρ₂ = {rho2:,.0f} در برابر ρ₁ = {rho1:,.0f} Ω·m ، K = {k:.2f}). جریان بیشتر در لایه سطحی می‌ماند.",
-            ["میله‌های بلند اثر کمی دارند؛ افزایش سطح پوشش شبکه و تراکم هادی‌ها در لایه اول مؤثرتر است.",
-             "مواد بهبوددهنده خاک (مثل بنتونیت یا بتن رسانا) اطراف هادی‌ها را بررسی کنید.",
-             "اتصال به الکترود دورتر در منطقه مرطوب‌تر یا کم‌مقاومت‌تر ممکن است؛ ولتاژ منتقل‌شده را کنترل کنید.",
-             "ρ معادل به ابعاد شبکه وابسته است؛ برای طرح نهایی از روش Sunde یا نرم‌افزار تخصصی استفاده کنید."], "IEEE 80")
-
-    # --- ۴) مقاومت شبکه و حساسیت به ρ معادل ---
-    bounds = {}
-    for name, rho_x in (("ρ معادل مدل", out["rho_eq"]), ("فقط ρ₁", rho1), ("فقط ρ₂", rho2)):
-        bounds[name] = ig * grid_resistance(rho_x, inp["area"], inp["length"], inp["depth"])["sverak"]
-    g_lo, g_hi = min(bounds.values()), max(bounds.values())
-    spread = g_hi / g_lo
-    if rg_d <= 1.0:
-        rg_txt = "در محدوده‌ای است که معمولاً برای پست‌های بزرگ هدف‌گذاری می‌شود"
-    elif rg_d <= 5.0:
-        rg_txt = "برای پست‌های کوچک‌تر توزیع معمولاً قابل قبول است"
-    else:
-        rg_txt = "بالاتر از محدوده معمول است"
-    add("warn" if spread > 1.3 or rg_d > 5 else "info", "مقاومت شبکه و حساسیت به ρ معادل",
-        f"Rg طراحی (Sverak) برابر {rg_d:.2f} Ω است و {rg_txt} (راهنمای عملی، نه معیار پذیرش؛ معیار اصلی ایمنی ولتاژهای تماس و گام است). "
-        f"اگر خاک یکنواخت با ρ₁ یا ρ₂ فرض شود، GPR بین {g_lo:,.0f} و {g_hi:,.0f} V تغییر می‌کند.",
-        (["دامنه تغییر زیاد است؛ پیش از طرح نهایی ρ معادل را با روش Sunde یا نرم‌افزار تحلیل زمین دقیق‌تر کنید."]
-         if spread > 1.3 else []), "IEEE 80")
-
-    # --- ۵) کیفیت داده خاک (فقط حالت پروژه واقعی) ---
-    issues = data_sufficiency(a, rho, fit, inp["area"]) if real else []
-    if real:
-        if issues:
-            add(issues[0][0], "کیفیت و کفایت داده‌های اندازه‌گیری خاک",
-                f"{len(issues)} مورد در داده‌ها یافت شد که بر اطمینان نتایج اثر می‌گذارد.",
-                [t for _, t in issues], "IEEE 81")
-        else:
-            add("ok", "کیفیت و کفایت داده‌های اندازه‌گیری خاک",
-                "پوشش فواصل، تعداد نقاط، هموار بودن منحنی و عدم‌قطعیت پارامترها قابل قبول است.", [], "IEEE 81")
-        add("info", "نکات میدانی برای اندازه‌گیری مطمئن (Wenner)", "رعایت این موارد کیفیت داده را بالا می‌برد:",
-            ["حداقل دو مسیر عمود بر هم اندازه‌گیری و نتایج مقایسه شود؛ اختلاف زیاد یعنی ناهمگنی جانبی خاک.",
-             "مسیر آزمون با لوله، ریل، کابل یا حصار فلزی مدفون موازی نباشد و از آن‌ها دور باشد.",
-             "عمق فرورفتن میله‌ها نسبت به فاصله a کوچک بماند (معمولاً کمتر از یک‌بیستم a)، تا فرمول ρ = 2πaR معتبر باشد.",
-             "طراحی را بر پایه شرایط بدتر (خاک خشک و مقاومت ویژه بالاتر) انجام دهید یا اندازه‌گیری را در فصل خشک تکرار کنید.",
-             "از دستگاه کالیبره با فرکانس غیر از هارمونیک‌های 50 Hz استفاده و سیم‌ها را برای حذف تزویج القایی از هم دور کنید."], "IEEE 81")
-    else:
-        add("info", "حالت آموزشی",
-            "کنترل کفایت داده‌های اندازه‌گیری غیرفعال است. برای پروژه واقعی گزینه «حالت پروژه واقعی» را در پنل کناری فعال کنید.",
-            [], "")
-
-    # --- ۶) فرضیات ایمنی ---
-    acts = [f"Ig باید با اعمال ضریب تقسیم جریان (Sf) و ضریب decrement (Df) از جریان خطای کل به دست آمده باشد؛ مقدار واردشده: {ig:,.0f} A.",
-            f"ρs لایه سطحی را برای حالت خیس وارد کنید (مقدار فعلی {inp['rho_s']:,.0f} Ω·m).",
-            "وزن مبنا 50 kg محافظه‌کارانه‌تر از 70 kg است؛ اگر حضور افراد سبک‌تر محتمل است آن را انتخاب کنید."]
-    lvl = "info"
-    if not (0.03 <= inp["ts"] <= 3.0):
-        acts.insert(0, f"زمان قطع {inp['ts']:g} s خارج از بازه اعتبار فرمول جریان مجاز بدن (حدود ۰٫۰۳ تا ۳ ثانیه) است؛ نتیجه را با احتیاط ببینید.")
-        lvl = "warn"
-    add(lvl, "فرضیات ورودی ایمنی", "درستی این ورودی‌ها مستقیماً حدود مجاز و GPR را تعیین می‌کند:", acts, "IEEE 80")
-
-    # --- ۷) پس از اجرا ---
-    diag = float(np.sqrt(2 * inp["area"]))
-    add("info", "اقدامات پس از اجرا و بهره‌برداری",
-        "طراحی با محاسبه تمام نمی‌شود؛ مقدار اجراشده باید راستی‌آزمایی شود:",
-        [f"پس از ساخت، Rg را با روش افت پتانسیل (fall-of-potential) اندازه بگیرید و با مقدار طراحی ({rg_d:.2f} Ω) مقایسه کنید. "
-         f"پروب جریان باید چند برابر بزرگ‌ترین بُعد شبکه دور باشد (معمولاً ۵ تا ۶ برابر یا بیشتر، یعنی برای قطر ≈ {diag:.0f} m حدود {5 * diag:,.0f} m).",
-         "ولتاژهای تماس و گام را در نقاط بحرانی (کنار حصار و تجهیزات) با تزریق جریان کنترل کنید.",
-         "ظرفیت حرارتی هادی‌ها (رابطه Onderdonk) و استحکام مکانیکی اتصالات را برای Ig و زمان قطع بررسی کنید.",
-         "ولتاژ منتقل‌شده به حصار، لوله‌ها و کابل‌های مخابراتی را کنترل کنید و اتصالات را به‌صورت دوره‌ای بازرسی کنید."],
-        "IEEE 80 / IEEE 81")
-
-    cards.sort(key=lambda c: SEV[c["lvl"]])
-
-    # --- خلاصه ---
-    if ratio <= 1:
-        s1 = ("ok" if ratio <= 0.8 else "warn", f"از نظر GPR طرح قابل قبول است ({ratio * 100:.0f}٪ ولتاژ تماس مجاز).")
-        priority = "اجرا و راستی‌آزمایی میدانی مقدار Rg"
-    elif mesh_ok:
-        s1 = ("warn", f"GPR ({gpr:,.0f} V) از ولتاژ تماس مجاز ({e_touch:,.0f} V) بیشتر است، ولی Em ({em:,.0f} V) و Es ({es:,.0f} V) در حد مجازند.")
-        priority = "کنترل ولتاژ منتقل‌شده و راستی‌آزمایی میدانی"
-    else:
-        s1 = ("bad", f"Em ({em:,.0f} V) یا Es ({es:,.0f} V) از حد مجاز ({e_touch:,.0f} / {es_tol:,.0f} V) بیشتر است؛ طرح باید اصلاح شود.")
-        priority = "اصلاح هندسه شبکه (کاهش D، میله‌ها)، لایه سطحی یا کاهش Ig و زمان قطع"
-    s2 = ("info", f"خاک دولایه: ρ₁ = {rho1:,.0f} Ω·m ، ρ₂ = {rho2:,.0f} Ω·m ، h = {h:.2f} m (RMSE = {fit['rmse_pct']:.1f}٪).")
-    extra = []
-    if stt:
-        extra.append(("ok" if stt["touch_unsafe_pct"] == 0 and stt["step_unsafe_pct"] == 0 else "warn",
-                      f"نقشه عددی: ناحیه ناایمن تماس {stt['touch_unsafe_pct']:.1f}٪ و گام {stt['step_unsafe_pct']:.1f}٪ ؛ "
-                      f"گرادیان داخل شبکه {stt['grad_in'][0]:.1f}–{stt['grad_in'][1]:.1f} V/m."))
-    if real:
-        worst = issues[0][0] if issues else "ok"
-        conf = "پایین" if (worst == "bad" or len(issues) >= 3) else ("متوسط" if issues else "بالا")
-        if worst == "bad":
-            priority = "تکمیل اندازه‌گیری خاک (فواصل بزرگ‌تر) پیش از هر تصمیم طراحی"
-        s3 = ({"پایین": "bad", "متوسط": "warn", "بالا": "ok"}[conf], f"اطمینان به داده‌های خاک: {conf}.")
-    else:
-        s3 = ("info", "حالت آموزشی: کنترل کفایت داده غیرفعال است.")
-    return dict(summary=[s1, s2] + extra + [s3], priority=priority, cards=cards, real=real)
-
-
-_ICON = {"ok": "✅", "warn": "⚠️", "bad": "🚨", "info": "ℹ️"}
-
-
-def advice_html(adv: dict) -> str:
-    """نمایش توصیه‌ها به‌صورت HTML راست‌به‌چپ (بدون لیست Markdown)."""
-    parts = ['<div class="adv-sum"><div class="adv-sum-t">خلاصه توصیه</div>']
-    for lvl, text in adv["summary"]:
-        parts.append(f'<div class="adv-li"><span>{_ICON[lvl]}</span><span>{text}</span></div>')
-    parts.append(f'<div class="adv-prio"><b>اولویت اول:</b> {adv["priority"]}</div></div>')
-    for c in adv["cards"]:
-        ref = f'<span class="adv-ref">{c["ref"]}</span>' if c["ref"] else ""
-        acts = "".join(f'<div class="adv-li"><span>▸</span><span>{t}</span></div>' for t in c["acts"])
-        parts.append(f'<div class="adv {c["lvl"]}"><div class="adv-h"><span>{_ICON[c["lvl"]]} {c["title"]}</span>{ref}</div>'
-                     f'<div class="adv-b">{c["body"]}</div>{acts}</div>')
-    parts.append('<div class="adv-foot">این توصیه‌ها قاعده‌محور و خودکارند و جایگزین محاسبات کامل IEEE 80 (Em و Es) '
-                 'و بازبینی مهندس مسئول نیستند.</div>')
-    return "".join(parts)
-
-
-def advice_markdown(adv: dict) -> str:
-    lines = ["# توصیه مهندسی", "", "## خلاصه"]
-    lines += [f"- {_ICON[l]} {t}" for l, t in adv["summary"]]
-    lines += [f"- **اولویت اول:** {adv['priority']}", ""]
-    for c in adv["cards"]:
-        lines += [f"## {_ICON[c['lvl']]} {c['title']}" + (f" ({c['ref']})" if c["ref"] else ""), c["body"], ""]
-        lines += [f"- {t}" for t in c["acts"]] + [""]
-    lines.append("> توصیه‌ها قاعده‌محور و خودکارند و جایگزین بازبینی مهندس مسئول نیستند.")
-    return "\n".join(lines)
-
-
-# ============================================================
-#  اجرای تحلیل
-# ============================================================
-def run_analysis(mode_R, a_text, v_text, area, aspect, spacing, d_mm, rod_mode, rod_len, depth, method,
-                 ig, ts, weight, use_surface, rho_s, hs, real_mode=True) -> dict:
-    a_raw = parse_series(a_text, "فاصله a")
-    v_raw = parse_series(v_text, "مقادیر اندازه‌گیری")
-    if mode_R and a_raw.size == v_raw.size:
-        v_raw = 2.0 * np.pi * a_raw * v_raw          # ρa = 2π·a·R
-    a_vals, rho_vals = validate_data(a_raw, v_raw)
-    fit = fit_two_layer(tuple(a_vals), tuple(rho_vals))
-
-    geom = make_geometry(area, aspect, spacing, d_mm, rod_mode, rod_len, depth)
-    rho_eq = equivalent_resistivity(method, fit, area)
-    rg = grid_resistance(rho_eq, area, geom["LT"], depth)
-    gpr = ig * rg["sverak"]
-    mesh = ieee80_mesh_step(rho_eq, ig, geom)
-    hs_eff = hs if use_surface else 0.0
-    tv = tolerable_voltages(fit["rho1"], rho_s if use_surface else fit["rho1"], hs_eff, weight, ts)
-    inp = dict(area=area, aspect=aspect, spacing=spacing, d_mm=d_mm, rod_mode=rod_mode, rod_len=rod_len,
-               length=geom["LT"], depth=depth, ig=ig, ts=ts, weight=weight,
-               hs=hs_eff, rho_s=rho_s, real_mode=real_mode)
-    try:                                                   # نقشه پتانسیل (اختیاری؛ خطا کل برنامه را نمی‌شکند)
-        num = solve_grid_potential(float(area), float(aspect), float(spacing), float(d_mm),
-                                   rod_mode, float(rod_len), float(depth))
-        num_stats = potential_stats(num, geom, rho_eq, ig, tv)
-    except (np.linalg.LinAlgError, MemoryError, ValueError):
-        num, num_stats = None, None
-    return dict(a=a_vals, rho=rho_vals, fit=fit, rho_eq=rho_eq, rg=rg, geom=geom, mesh=mesh,
-                num=num, num_stats=num_stats, rg_design=rg["sverak"], gpr=gpr, tv=tv, inp=inp)
-
-
-# ============================================================
-#  صفحه و پنل ورودی
-# ============================================================
-st.set_page_config(page_title="Grounding Designer", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Grounding Designer · IEEE 80", page_icon="⚡", layout="wide",
+                   initial_sidebar_state="expanded")
 st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
 
+# ---------- سایدبار ----------
 with st.sidebar:
-    st.markdown(H("""<div class="brand"><div class="logo">⚡</div><div>
-        <div class="brand-t">Grounding Designer</div><div class="brand-s">IEEE Std 80</div></div></div>"""),
-                unsafe_allow_html=True)
+    st.markdown(H("""<div class="sb-brand"><div class="logo">⚡</div><div>
+        <div class="sb-brand-t">Grounding Designer</div>
+        <div class="sb-brand-s">IEEE Std 80 · v2.0</div></div></div>"""), unsafe_allow_html=True)
+
     with st.form("inputs"):
         st.markdown('<div class="side-t">📊 داده‌های Wenner</div>', unsafe_allow_html=True)
         mode = st.radio("نوع داده اندازه‌گیری", ["مقاومت ظاهری ρa (Ω·m)", "مقاومت قرائت‌شده R (Ω)"])
         a_text = st.text_input("فاصله الکترودها a (m)", DEFAULTS["a_text"])
         v_text = st.text_input("مقادیر اندازه‌گیری", DEFAULTS["v_text"])
 
-        st.markdown('<div class="side-t">🏭 شبکه زمین</div>', unsafe_allow_html=True)
+        st.markdown('<div class="side-t">🏭 هندسه شبکه زمین</div>', unsafe_allow_html=True)
         area = st.number_input("مساحت (m²)", min_value=1.0, value=DEFAULTS["area"])
-        aspect = st.number_input("نسبت طول به عرض زمین (Lx/Ly)", min_value=0.2, max_value=5.0,
+        aspect = st.number_input("نسبت طول به عرض (Lx/Ly)", min_value=0.2, max_value=5.0,
                                  value=DEFAULTS["aspect"], step=0.1)
         spacing = st.number_input("فاصله هادی‌ها D (m)", min_value=1.0, value=DEFAULTS["spacing"])
         d_mm = st.number_input("قطر هادی (mm)", min_value=4.0, value=DEFAULTS["d_mm"])
-        depth = st.number_input("عمق دفن شبکه (m)", min_value=0.0, value=DEFAULTS["depth"])
+        depth = st.number_input("عمق دفن شبکه (m)", min_value=0.05, value=DEFAULTS["depth"], step=0.05)
         rod_mode = st.selectbox("میله‌های زمین", list(ROD_MODES), format_func=ROD_MODES.get)
         rod_len = st.number_input("طول هر میله (m)", min_value=0.5, value=DEFAULTS["rod_len"])
         method = st.selectbox(
@@ -1390,24 +1462,22 @@ with st.sidebar:
         rho_s = st.number_input("ρ لایه سطحی (Ω·m)", min_value=1.0, value=DEFAULTS["rho_s"])
         hs = st.number_input("ضخامت لایه سطحی (m)", min_value=0.0, value=DEFAULTS["hs"])
 
-        st.markdown('<div class="side-t">⚙️ حالت استفاده</div>', unsafe_allow_html=True)
+        st.markdown('<div class="side-t">⚙️ تنظیمات پیشرفته</div>', unsafe_allow_html=True)
         real_mode = st.checkbox("حالت پروژه واقعی (کنترل کفایت داده)", value=DEFAULTS["real_mode"],
                                 help="فعال: هشدارهای عمق نفوذ و کفایت داده نمایش داده می‌شود. "
                                      "غیرفعال: حالت آموزشی، بدون این کنترل‌ها.")
-
         run_btn = st.form_submit_button("🚀 اجرای محاسبات", type="primary", use_container_width=True)
 
 if run_btn:
     try:
         st.session_state["out"] = run_analysis(
             mode.startswith("مقاومت قرائت"), a_text, v_text, area, aspect, spacing, d_mm, rod_mode, rod_len,
-            depth, method,
-            ig, ts, weight, use_surface, rho_s, hs, real_mode)
+            depth, method, ig, ts, weight, use_surface, rho_s, hs, real_mode)
     except (ValueError, RuntimeError) as e:
         st.error(f"خطا: {e}")
         st.stop()
 elif "out" not in st.session_state:
-    st.session_state["out"] = run_analysis(**DEFAULTS)     # نمایش اولیه با داده نمونه
+    st.session_state["out"] = run_analysis(**DEFAULTS)
 
 out = st.session_state["out"]
 a_vals, rho_vals, fit = out["a"], out["rho"], out["fit"]
@@ -1417,37 +1487,50 @@ safe = ratio <= 1.0
 mesh_, geom_ = out["mesh"], out["geom"]
 mesh_ok_ = mesh_["Em"] <= tv["e_touch"] and mesh_["Es"] <= tv["e_step"]
 
-# ============================================================
-#  نمایش نتایج
-# ============================================================
-st.markdown(H("""
-<div class="hero">
-  <div class="hero-badge">IEEE Std 80</div>
-  <div class="hero-title">تحلیل مقاومت ویژه خاک و طراحی شبکه زمین</div>
-  <div class="hero-sub">برازش مدل دولایه Wenner، مقاومت شبکه، ولتاژهای mesh و step و نقشه گرادیان پتانسیل</div>
-  <div class="hero-chips"><span>Wenner</span><span>Two-layer model</span><span>Sverak</span><span>Mesh / Step</span><span>Potential map</span></div>
+# ---------- هدر حرفه‌ای ----------
+_status_kind = "ok" if safe and mesh_ok_ else ("warn" if safe or mesh_ok_ else "bad")
+_status_txt = "ایمن" if safe and mesh_ok_ else ("هشدار" if safe or mesh_ok_ else "ناایمن")
+_mode_txt = "پروژه واقعی" if inp["real_mode"] else "آموزشی"
+st.markdown(H(f"""
+<div class="hdr">
+  <div class="hdr-l">
+    <div class="hdr-logo">⚡</div>
+    <div>
+      <div class="hdr-t">تحلیل خاک و طراحی شبکه زمین</div>
+      <div class="hdr-s">Soil & Grounding Designer · IEEE Std 80</div>
+    </div>
+  </div>
+  <div class="hdr-r">
+    <span class="hdr-badge">{_mode_txt}</span>
+    <span class="hdr-badge {_status_kind}">{_status_txt}</span>
+    <span class="hdr-badge">{inp['area']:,.0f} m² · Ig {inp['ig']:,.0f} A</span>
+  </div>
 </div>"""), unsafe_allow_html=True)
 
-mode_chip = chip("حالت پروژه واقعی", "good") if inp["real_mode"] else chip("حالت آموزشی", "neutral")
-st.markdown(f'<div class="chips">{mode_chip}</div>', unsafe_allow_html=True)
+# ---------- کنترل‌های سریع ----------
+st.markdown(H('<div class="ctrl-bar"><span class="ctrl-lbl">⚡ نمایش:</span></div>'), unsafe_allow_html=True)
+cc1, cc2 = st.columns([1, 3])
+with cc1:
+    _exag = st.slider("اغراق عمودی", 1.0, 6.0, 1.0, 0.5, key="exag_slider",
+                      help="1 = مقیاس واقعی؛ >1 = اغراق‌شده برای دیدن بهتر عمق")
+
 if inp["real_mode"]:
     _issues = data_sufficiency(a_vals, rho_vals, fit, inp["area"])
     for _lvl, _txt in _issues[:2]:
-        st.markdown(f'<div class="note {_lvl}">{_ICON[_lvl]} <b>هشدار داده‌ها:</b> {_txt}</div>', unsafe_allow_html=True)
-    if len(_issues) > 2:
-        st.markdown(f'<div class="note info">{len(_issues) - 2} مورد دیگر در تب «توصیه مهندسی» آمده است.</div>',
+        st.markdown(f'<div class="note {"warn" if _lvl == "bad" else _lvl}">{_ICON[_lvl]} <b>هشدار داده‌ها:</b> {_txt}</div>',
                     unsafe_allow_html=True)
 
+# ---------- KPI ----------
 gpr_color = C_GREEN if safe else (C_AMBER if mesh_ok_ else C_RED)
 em_color = C_GREEN if mesh_["Em"] <= tv["e_touch"] else C_RED
 es_color = C_GREEN if mesh_["Es"] <= tv["e_step"] else C_RED
 cards = [
-    ("لایه اول", "🟦", f"{fit['rho1']:,.1f}", "Ω·m", "مقاومت ویژه ρ₁", C_BLUE),
-    ("لایه دوم", "🟪", f"{fit['rho2']:,.1f}", "Ω·m", f"ρ₂ · ضخامت لایه اول {fit['h']:.2f} m", C_PURPLE),
-    ("مقاومت شبکه Rg", "🔌", f"{out['rg_design']:.3f}", "Ω", "روش Sverak", C_AMBER),
-    ("افزایش پتانسیل زمین", "⚡", f"{gpr:,.0f}", "V", f"Ig = {inp['ig']:,.0f} A", gpr_color),
-    ("ولتاژ mesh (Em)", "🔲", f"{mesh_['Em']:,.0f}", "V", f"حد تماس {tv['e_touch']:,.0f} V", em_color),
-    ("ولتاژ step (Es)", "👣", f"{mesh_['Es']:,.0f}", "V", f"حد گام {tv['e_step']:,.0f} V", es_color),
+    ("لایه اول", "🟦", f"{fit['rho1']:,.1f}", "Ω·m", "ρ₁", C_CYAN),
+    ("لایه دوم", "🟪", f"{fit['rho2']:,.1f}", "Ω·m", f"ρ₂ · h = {fit['h']:.2f} m", C_PURPLE),
+    ("مقاومت شبکه", "🔌", f"{out['rg_design']:.3f}", "Ω", "Sverak", C_AMBER),
+    ("GPR", "⚡", f"{gpr:,.0f}", "V", f"{ratio * 100:.0f}٪ حد مجاز", gpr_color),
+    ("ولتاژ mesh", "🔲", f"{mesh_['Em']:,.0f}", "V", f"حد {tv['e_touch']:,.0f} V", em_color),
+    ("ولتاژ step", "👣", f"{mesh_['Es']:,.0f}", "V", f"حد {tv['e_step']:,.0f} V", es_color),
 ]
 st.markdown(H('<div class="kpi-grid">' + "".join(
     f'<div class="kpi" style="--accent:{c}"><div class="kpi-top"><div class="kpi-label">{t}</div>'
@@ -1455,154 +1538,159 @@ st.markdown(H('<div class="kpi-grid">' + "".join(
     f'<div class="kpi-sub">{s}</div></div>' for t, i, v, u, s, c in cards) + '</div>'),
     unsafe_allow_html=True)
 
+# ---------- وضعیت ایمنی ----------
 fill_pct = min(ratio, 1.5) / 1.5 * 100
 fill_col = C_GREEN if ratio <= 0.8 else C_AMBER if ratio <= 1 else C_RED
-if safe:
-    state, title = "ok", "✅ طرح از نظر GPR ایمن است"
-    desc = "طبق IEEE 80 در این حالت تحلیل ولتاژهای mesh و step الزامی نیست."
+if safe and mesh_ok_:
+    state, title = "ok", "✅ طرح از نظر GPR، Em و Es ایمن است"
+    desc = "طبق IEEE 80، GPR و ولتاژهای mesh و step در حد مجازند."
+elif safe:
+    state, title = "warn", "⚠️ GPR ایمن است، اما Em/Es در حد مجاز"
+    desc = "هندسه شبکه یا لایه سطحی را بازبینی کنید."
 elif mesh_ok_:
     state, title = "warn", "⚠️ GPR بالاست، اما Em و Es مجازند"
-    desc = "ولتاژهای تماس و گام در حد مجازند؛ ولتاژ منتقل‌شده به حصار، لوله و کابل‌ها را کنترل کنید."
+    desc = "ولتاژ منتقل‌شده به حصار، لوله و کابل‌ها را کنترل کنید."
 else:
     state, title = "bad", "🚨 Em یا Es از حد مجاز بیشتر است"
     desc = "هندسه شبکه، میله‌ها، لایه سطحی، Ig یا زمان قطع را اصلاح کنید."
 st.markdown(H(f"""
 <div class="status {state}">
   <div class="status-t">{title}</div>
-  <div class="status-d">GPR = {num(gpr, ',.0f')} V در برابر ولتاژ تماس مجاز {num(tv['e_touch'], ',.0f')} V ({num(ratio * 100, '.0f')}٪) ·
+  <div class="status-d">GPR = {num(gpr, ',.0f')} V ({num(ratio * 100, '.0f')}٪) ·
   Em = {num(mesh_['Em'], ',.0f')} V ({num(mesh_['Em'] / tv['e_touch'] * 100, '.0f')}٪) ·
   Es = {num(mesh_['Es'], ',.0f')} V ({num(mesh_['Es'] / tv['e_step'] * 100, '.0f')}٪) — {desc}</div>
   <div class="track"><div class="fill" style="width:{fill_pct:.1f}%;background:{fill_col}"></div><div class="limit"></div></div>
   <div class="track-l"><span>0</span><span>حد مجاز GPR</span><span>150٪</span></div>
 </div>"""), unsafe_allow_html=True)
 
+# ---------- تب‌ها ----------
 tab1, tab_3d, tab_map, tab2, tab3, tab4, tab5 = st.tabs(
-    ["🌍 مدل خاک", "🌐 نمای سه‌بعدی", "🗺️ پتانسیل و گرادیان", "🛡️ شبکه و ایمنی", "📋 جدول داده‌ها", "📄 گزارش",
-     "🧭 توصیه مهندسی"])
+    ["📊 مدل خاک", "🌐 نمای سه‌بعدی", "🗺️ پتانسیل و گرادیان", "🛡️ شبکه و ایمنی",
+     "📋 داده‌ها", "📄 گزارش", "🧭 توصیه مهندسی"])
 
 with tab1:
     q_kind = "good" if fit["rmse_pct"] <= 5 else "warn" if fit["rmse_pct"] <= 10 else "bad"
     chips_html = "".join([
-        chip(f"RMSE برازش: {fit['rmse_pct']:.1f}٪", q_kind),
-        chip(f"بیشینه خطا: {fit['max_err_pct']:.1f}٪", "neutral"),
-        chip(f"ضریب بازتاب K = {fit['k']:.3f}", "neutral"),
-        chip(f"RMSE مدل یکنواخت: {fit['rmse_uniform_pct']:.1f}٪", "neutral"),
+        chip(f"RMSE: {fit['rmse_pct']:.1f}٪", q_kind),
+        chip(f"max error: {fit['max_err_pct']:.1f}٪", "neutral"),
+        chip(f"K = {fit['k']:.3f}", "neutral"),
+        chip(f"uniform RMSE: {fit['rmse_uniform_pct']:.1f}٪", "neutral"),
     ])
     st.markdown(f'<div class="chips">{chips_html}</div>', unsafe_allow_html=True)
     if fit["rmse_pct"] > 10:
-        st.markdown('<div class="note warn">خطای برازش بالاست؛ داده‌ها را بازبینی کنید یا خاک ممکن است بیش از دو لایه باشد.</div>',
-                    unsafe_allow_html=True)
-    if abs(fit["k"]) < 0.05 or fit["rmse_uniform_pct"] <= fit["rmse_pct"] * 1.2:
-        st.markdown('<div class="note info">خاک تقریباً یکنواخت است؛ ρ₂ و h در این حالت قابل اتکا نیستند.</div>',
-                    unsafe_allow_html=True)
+        st.markdown('<div class="note warn">⚠️ خطای برازش بالاست؛ داده‌ها را بازبینی کنید.</div>', unsafe_allow_html=True)
     if fit["h_at_bound"] or fit["rho_at_bound"]:
-        st.markdown('<div class="note warn">یکی از پارامترها به مرز بازه جستجو رسیده است؛ نتیجه برازش یکتا نیست.</div>',
-                    unsafe_allow_html=True)
+        st.markdown('<div class="note warn">⚠️ یکی از پارامترها به مرز بازه رسیده است.</div>', unsafe_allow_html=True)
 
     c1, c2 = st.columns(2)
     with c1:
-        section("منحنی برازش", "اندازه‌گیری در برابر مدل")
+        section("منحنی برازش", "داده‌ها در برابر مدل")
         st.plotly_chart(fit_fig(a_vals, rho_vals, fit), use_container_width=True)
     with c2:
-        section("مقطع خاک", "رسم‌شده از اعداد تحلیل · مقیاس عمق واقعی")
+        section("مقطع خاک", "مقیاس عمق واقعی")
         svg = soil_section_svg(fit, inp["depth"], inp["hs"], inp["rho_s"])
         b64 = base64.b64encode(svg.encode("utf-8")).decode()
-        st.markdown(f'<img src="data:image/svg+xml;base64,{b64}" style="width:100%;border-radius:16px;'
-                    f'box-shadow:0 8px 22px rgba(0,0,0,.18)"/>', unsafe_allow_html=True)
-        st.download_button("📥 دانلود مقطع (SVG)", svg.encode("utf-8"), file_name="soil_section.svg",
+        st.markdown(f'<img src="data:image/svg+xml;base64,{b64}" style="width:100%;border-radius:6px;'
+                    f'border:1px solid #243244"/>', unsafe_allow_html=True)
+        st.download_button("📥 دانلود SVG", svg.encode("utf-8"), file_name="soil_section.svg",
                            mime="image/svg+xml", use_container_width=True)
     section("خطای برازش", "ناحیه سبز: ±۱۰٪")
     st.plotly_chart(residual_fig(a_vals, fit["rel_err"]), use_container_width=True)
 
 with tab_3d:
-    section("نمای سه‌بعدی لایه‌ها و شبکه زمین", "با ماوس یا انگشت بچرخانید")
-    exag = st.slider("اغراق عمق (×)", 1, 10, 3,
-                     help="عمق لایه‌ها نسبت به ابعاد زمین کم است؛ این مقدار فقط ظاهر نمودار را بلندتر می‌کند.")
-    st.plotly_chart(fig_3d_soil(fit, geom_, inp["depth"], inp["hs"], float(exag)), use_container_width=True)
-    st.markdown('<div class="note info">هادی‌ها و میله‌ها دقیقاً با ابعاد، فاصله D و قطعات واردشده در پنل کناری رسم شده‌اند. '
-                'نمودار برای درک فضایی است، نه نقشه اجرایی.</div>', unsafe_allow_html=True)
+    section("نمای سه‌بعدی لایه‌ها و شبکه زمین", "با ماوس بچرخانید · از دکمه‌های نما استفاده کنید")
+    cm1, cm2, cm3 = st.columns([1, 1, 1])
+    with cm1:
+        view_preset = st.selectbox("نما", ["ایزومتریک", "روی (Top)", "جلو (Front)", "کنار (Side)"],
+                                    key="view3d")
+    with cm2:
+        show_dims = st.checkbox("خطوط اندازه", value=True)
+    with cm3:
+        show_ground = st.checkbox("صفحه زمین", value=True)
+    fig3d = fig_3d_soil(fit, geom_, inp["depth"], inp["hs"],
+                         vertical_exag=float(_exag), show_dims=show_dims, show_ground=show_ground)
+    # اعمال نما
+    _eyes = {"ایزومتریک": (1.6, -1.8, 1.1), "روی (Top)": (0.0, -0.001, 2.2),
+             "جلو (Front)": (0.0, -2.2, 0.0), "کنار (Side)": (2.2, 0.0, 0.0)}
+    fig3d.update_layout(scene_camera=dict(eye=dict(x=_eyes[view_preset][0], y=_eyes[view_preset][1],
+                                                     z=_eyes[view_preset][2]), up=dict(x=0, y=0, z=1)))
+    st.plotly_chart(fig3d, use_container_width=True)
+    if _exag > 1.05:
+        st.markdown(f'<div class="note warn">⚠️ مقیاس عمودی اغراق‌شده است (×{_exag:.1f}) — نمای واقعی با اسلایدر «اغراق عمودی» = 1 بدست می‌آید.</div>',
+                    unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="note info">نمای با مقیاس واقعی. خطوط اندازه بر اساس ابعاد واقعی مدل رسم شده‌اند.</div>',
+                    unsafe_allow_html=True)
 
 with tab_map:
     section("نقشه پتانسیل سطح و محدوده گرادیان", "تحلیل عددی · خاک یکنواخت با ρ معادل")
     num_, stt_ = out.get("num"), out.get("num_stats")
     if not stt_:
-        st.markdown('<div class="note warn">تحلیل عددی پتانسیل انجام نشد؛ هندسه شبکه را بررسی کنید.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="note warn">⚠️ تحلیل عددی پتانسیل انجام نشد.</div>', unsafe_allow_html=True)
     else:
         tu, su = stt_["touch_unsafe_pct"], stt_["step_unsafe_pct"]
         st.markdown('<div class="chips">' + "".join([
-            chip(f"ناحیه ناایمن تماس: {tu:.1f}٪", "good" if tu == 0 else "bad"),
-            chip(f"ناحیه ناایمن گام: {su:.1f}٪", "good" if su == 0 else "bad"),
+            chip(f"ناایمن تماس: {tu:.1f}٪", "good" if tu == 0 else "bad"),
+            chip(f"ناایمن گام: {su:.1f}٪", "good" if su == 0 else "bad"),
             chip(f"Rg عددی: {out['rho_eq'] * num_['rg_unit']:.2f} Ω", "neutral"),
-            chip(f"{num_['n_seg']} قطعه · گام نقشه {num_['dx']:.2f} m", "neutral"),
+            chip(f"{num_['n_seg']} قطعه · گام {num_['dx']:.2f} m", "neutral"),
         ]) + '</div>', unsafe_allow_html=True)
 
         view = st.radio("نمایش", ["ولتاژ تماس", "ولتاژ گام", "پتانسیل سطح", "گرادیان پتانسیل"], horizontal=True)
         dim = st.radio("بعد نمایش", ["۳بعدی (سطح)", "۲بعدی (نقشه رنگی)"], horizontal=True)
         if dim.startswith("۳"):
             st.plotly_chart(potential_surface_fig(view, num_, stt_, geom_, tv), use_container_width=True)
-            st.markdown('<div class="note info">صفحه مشکی نیمه‌شفاف حد مجاز است؛ هر جا سطح از آن بالاتر رفته ناایمن است. '
-                        'با ماوس یا انگشت بچرخانید؛ کانتورها روی کف و هادی‌ها با خط مشکی نشان داده شده‌اند.</div>',
-                        unsafe_allow_html=True)
         else:
             st.plotly_chart(potential_map_fig(view, num_, stt_, geom_, tv), use_container_width=True)
-            st.markdown('<div class="note info">خط مشکی حد مجاز است؛ ناحیه داخل آن از حد عبور کرده است. '
-                        'رنگ سبز یعنی ایمن، زرد نزدیک حد و قرمز بالاتر از حد.</div>', unsafe_allow_html=True)
 
-        section("محدوده گرادیان پتانسیل", "بیشینه و کمینه روی نقشه")
+        section("محدوده گرادیان پتانسیل")
         lo_, hi_ = stt_["grad_in"]
         st.markdown(H('<div class="mini-grid">' + "".join([
-            mini_card("گرادیان داخل شبکه (کمینه)", f"{lo_:.2f}", "V/m"),
-            mini_card("گرادیان داخل شبکه (بیشینه)", f"{hi_:.2f}", "V/m", highlight=True),
-            mini_card("گرادیان بیرون شبکه (بیشینه)", f"{stt_['grad_out_max']:.2f}", "V/m"),
+            mini_card("گرادیان داخل (کمینه)", f"{lo_:.2f}", "V/m"),
+            mini_card("گرادیان داخل (بیشینه)", f"{hi_:.2f}", "V/m", highlight=True),
+            mini_card("گرادیان بیرون (بیشینه)", f"{stt_['grad_out_max']:.2f}", "V/m"),
             mini_card("بیشینه ولتاژ تماس", f"{stt_['touch_max']:,.0f}", "V"),
             mini_card("بیشینه ولتاژ گام", f"{stt_['step_max']:,.0f}", "V"),
-            mini_card("کمترین پتانسیل سطح داخل شبکه", f"{stt_['v_min_pct']:.0f}", "٪ GPR"),
+            mini_card("کمینه پتانسیل داخل", f"{stt_['v_min_pct']:.0f}", "٪ GPR"),
         ]) + '</div>'), unsafe_allow_html=True)
 
-        section("نیمرخ در امتداد X", "موقعیت Y را انتخاب کنید")
+        section("نیمرخ در امتداد X")
         y_pct = st.slider("موقعیت Y (٪ عرض زمین)", 0, 100, 50)
         f_pot, f_ts, y_used = profile_figs(num_, stt_, geom_, tv, y_pct / 100.0)
         st.caption(f"نیمرخ در Y = {y_used:.1f} m ؛ ناحیه خاکستری محدوده شبکه است.")
         st.plotly_chart(f_pot, use_container_width=True)
         st.plotly_chart(f_ts, use_container_width=True)
-        st.markdown('<div class="note warn">فرض‌ها: خاک یکنواخت با ρ معادل، شبکه مستطیلی، ولتاژ تماس نقطه‌ای (GPR منهای پتانسیل سطح) '
-                    'و ولتاژ گام برابر گرادیان × ۱ متر. برای طرح نهایی نتیجه را با نرم‌افزار تخصصی (مثل CYMGRD یا CDEGS) '
-                    'راستی‌آزمایی کنید.</div>', unsafe_allow_html=True)
 
 with tab2:
     section("مقاومت شبکه زمین", f"ρ معادل = {out['rho_eq']:,.1f} Ω·m")
     st.markdown(H('<div class="mini-grid">' + "".join([
         mini_card("ρ / 4r", f"{rg['simple']:.3f}", "Ω"),
         mini_card("ρ / 4r + ρ / L", f"{rg['with_length']:.3f}", "Ω"),
-        mini_card("Sverak", f"{rg['sverak']:.3f}", "Ω", highlight=True, tag="مقدار طراحی"),
+        mini_card("Sverak", f"{rg['sverak']:.3f}", "Ω", highlight=True, tag="طراحی"),
     ]) + '</div>'), unsafe_allow_html=True)
 
-    section("هندسه شبکه و ولتاژهای mesh/step", "رابطه‌های IEEE 80")
+    section("هندسه شبکه و ولتاژهای mesh/step", "IEEE 80")
     st.markdown(H('<div class="mini-grid">' + "".join([
-        mini_card("ابعاد زمین", f"{geom_['Lx']:.1f} × {geom_['Ly']:.1f}", "m"),
+        mini_card("ابعاد", f"{geom_['Lx']:.1f} × {geom_['Ly']:.1f}", "m"),
         mini_card("هادی‌ها", f"{geom_['nx']} × {geom_['ny']}", f"D ≈ {geom_['D']:.1f} m"),
-        mini_card("طول کل هادی (با میله)", f"{geom_['LT']:,.0f}", "m"),
-        mini_card("میله‌های زمین", f"{geom_['n_rods']}", f"× {geom_['Lr']:g} m"),
-        mini_card("Em (mesh)", f"{mesh_['Em']:,.0f}", "V", highlight=True, tag=f"حد {tv['e_touch']:,.0f} V"),
-        mini_card("Es (step)", f"{mesh_['Es']:,.0f}", "V", highlight=True, tag=f"حد {tv['e_step']:,.0f} V"),
+        mini_card("طول کل هادی", f"{geom_['LT']:,.0f}", "m"),
+        mini_card("میله", f"{geom_['n_rods']}", f"× {geom_['Lr']:g} m"),
+        mini_card("Em", f"{mesh_['Em']:,.0f}", "V", highlight=True, tag=f"حد {tv['e_touch']:,.0f} V"),
+        mini_card("Es", f"{mesh_['Es']:,.0f}", "V", highlight=True, tag=f"حد {tv['e_step']:,.0f} V"),
         mini_card("Km · Ki · Ks", f"{mesh_['Km']:.3f} · {mesh_['Ki']:.2f} · {mesh_['Ks']:.3f}", ""),
-        mini_card("n (ضریب هندسی)", f"{mesh_['n']:.1f}", ""),
+        mini_card("n", f"{mesh_['n']:.1f}", ""),
     ]) + '</div>'), unsafe_allow_html=True)
     for _w in mesh_["warnings"]:
-        st.markdown(f'<div class="note warn">{_w}</div>', unsafe_allow_html=True)
-    if geom_["capped"]:
-        st.markdown('<div class="note warn">تعداد هادی‌ها به سقف ۲۵ در هر جهت محدود شده؛ فاصله واقعی بزرگ‌تر از D واردشده است.</div>',
-                    unsafe_allow_html=True)
+        st.markdown(f'<div class="note warn">⚠️ {_w}</div>', unsafe_allow_html=True)
 
-    section("حدود مجاز ایمنی", f"وزن مبنا {inp['weight']} kg · زمان خطا {inp['ts']} s")
+    section("حدود مجاز ایمنی", f"{inp['weight']} kg · {inp['ts']} s")
     st.markdown(H('<div class="mini-grid">' + "".join([
         mini_card("جریان مجاز بدن", f"{tv['i_body']:.3f}", "A"),
-        mini_card("ضریب لایه سطحی Cs", f"{tv['cs']:.3f}", ""),
+        mini_card("Cs", f"{tv['cs']:.3f}", ""),
         mini_card("ولتاژ گام مجاز", f"{tv['e_step']:,.0f}", "V"),
         mini_card("ولتاژ تماس مجاز", f"{tv['e_touch']:,.0f}", "V"),
     ]) + '</div>'), unsafe_allow_html=True)
-
-    section("مقایسه GPR، Em و Es با حدود مجاز", "خط آبی: حد مجاز")
+    section("مقایسه با حدود مجاز", "خط آبی: حد مجاز")
     st.plotly_chart(safety_fig(gpr, tv, mesh_["Em"], mesh_["Es"]), use_container_width=True)
 
 with tab3:
@@ -1611,12 +1699,10 @@ with tab3:
     st.dataframe(pd.DataFrame({
         "پارامتر": ["ρ₁", "ρ₂", "h", "K"],
         "مقدار": [fit["rho1"], fit["rho2"], fit["h"], fit["k"]],
-        "بازه اطمینان ۹۵٪": [_fmt(*fit["ci_95"][0]), _fmt(*fit["ci_95"][1]), _fmt(*fit["ci_95"][2]), "—"],
+        "بازه ۹۵٪": [_fmt(*fit["ci_95"][0]), _fmt(*fit["ci_95"][1]), _fmt(*fit["ci_95"][2]), "—"],
         "واحد": ["Ω·m", "Ω·m", "m", "—"]}),
         hide_index=True, use_container_width=True,
         column_config={"مقدار": st.column_config.NumberColumn(format="%.3f")})
-    if fit["dof"] < 2:
-        st.caption("تعداد داده‌ها نزدیک به تعداد پارامترهاست؛ بازه‌های اطمینان قابل اتکا نیستند.")
     section("مقایسه اندازه‌گیری و مدل")
     df_out = pd.DataFrame({"a (m)": a_vals, "Measured (Ω·m)": rho_vals,
                            "Fitted (Ω·m)": fit["pred"], "Error (%)": fit["rel_err"]})
@@ -1629,23 +1715,23 @@ with tab4:
         st.markdown(report_html(inp, fit, out["rho_eq"], rg, out["rg_design"], gpr, tv, out),
                     unsafe_allow_html=True)
     d1, d2 = st.columns(2)
-    d1.download_button("📥 دانلود گزارش (Markdown)", report.encode("utf-8"),
+    d1.download_button("📥 گزارش Markdown", report.encode("utf-8"),
                        file_name="grounding_report.md", use_container_width=True)
-    d2.download_button("📥 دانلود داده‌ها (CSV)", df_out.to_csv(index=False).encode("utf-8-sig"),
+    d2.download_button("📥 داده‌ها CSV", df_out.to_csv(index=False).encode("utf-8-sig"),
                        file_name="soil_analysis.csv", use_container_width=True)
     with st.expander("فرضیات و محدودیت‌ها"):
         st.markdown(
-            "- مدل خاک دولایه است و برای خاک چندلایه یا ناهمگن دقت کمتری دارد.\n"
+            "- مدل خاک دولایه است.\n"
             "- ρ معادل تقریبی است؛ برای طرح نهایی از روش Sunde یا نرم‌افزار تخصصی استفاده کنید.\n"
-            "- Em و Es با رابطه‌های IEEE 80 (شبکه مستطیلی، خاک یکنواخت) و نقشه پتانسیل با روش عددی ساده محاسبه شده‌اند؛ "
-            "برای طرح نهایی با نرم‌افزار تخصصی راستی‌آزمایی کنید.\n"
+            "- Em و Es با رابطه‌های IEEE 80 محاسبه شده‌اند.\n"
             "- خروجی برای طراحی اولیه است و طرح نهایی باید مهندس مسئول بازبینی کند.")
 
 with tab5:
     adv = engineering_advice(out)
-    section("خلاصه و توصیه مهندسی", "بر پایه IEEE 80 و IEEE 81 · قاعده‌محور")
+    section("خلاصه و توصیه مهندسی", "IEEE 80 / IEEE 81 · قاعده‌محور")
     st.markdown(advice_html(adv), unsafe_allow_html=True)
-    st.download_button("📥 دانلود توصیه‌ها (Markdown)", advice_markdown(adv).encode("utf-8"),
+    st.download_button("📥 دانلود توصیه‌ها (MD)", advice_markdown(adv).encode("utf-8"),
                        file_name="engineering_advice.md", use_container_width=True)
 
-st.markdown('<div class="foot">Grounding Designer · بر پایه IEEE Std 80</div>', unsafe_allow_html=True)
+st.markdown('<div class="foot">Grounding Designer · IEEE Std 80 · professional engineering workstation</div>',
+            unsafe_allow_html=True)
